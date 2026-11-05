@@ -17,4 +17,9 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 - Knock on the locked door of somebody's home: the prompt says Knock, your activate control knocks, on keyboard and controller. By day they let you in, at night only a friend does. A refusal leaves the door locked and its own prompt back so it can be picked; sneaking always gives the lock.
 
 ### Known
-- Non-persistent residents of an unloaded cell are not seen, so a faction home whose residents are all non-persistent answers by the player's standing even if they have died. A resident who is elsewhere still answers. Only the door's destination cell is made public, not a second cell behind it. Not used together with Simpler Knock.
+- Non-persistent residents of an unloaded cell are not seen, so their door says Nobody answers. Whether an unloaded persistent actor's current cell follows their schedule is not yet proven. Only the door's destination cell is made public, not a second cell behind it. Not used together with Simpler Knock.
+### Changed
+- A knock is answered only by somebody in the destination cell right now, by the actor's current cell (the owner, 2026-11-05). Nobody there: Nobody answers. This replaces residents elsewhere answering and the faction standing fallback. DevBench op=check lists the owner's people with where the game holds them.
+- A press on a locked home door now shows a box: Knock, Pick the lock, Leave. A lock is only picked when chosen. First test: a refused door's second press reached the lock path, Lock Interaction Overhaul's auto-pick took it with its trespass alarm, and the player was jailed; the let-in never ran for that door.
+### Fixed
+- The prompt shows under Simple Activate, which drops the first line of a door's prompt: while it is loaded the prompt is one line, Knock: name.

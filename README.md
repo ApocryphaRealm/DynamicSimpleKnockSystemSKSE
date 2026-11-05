@@ -1,6 +1,6 @@
 # Dynamic Simple Knock System SKSE
 
-Look at the locked door of somebody's home and the prompt says Knock. Press your activate control. By day they let you in with a "Come in." At night only a friend gets in. A refusal changes nothing: the door stays locked, its own prompt comes back so you can pick it, and sneaking always gives you the lock.
+Look at the locked door of somebody's home and the prompt says Knock. Press your activate control and a box offers Knock, Pick the lock, or Leave. By day a knock gets you a "Come in." At night only a friend gets in. A refusal changes nothing and the door stays locked. A lock is only picked when you choose it, and sneaking goes straight to the lock.
 
 No plugin, no scripts, no patches. It reads who owns the door or the space behind it while you play, so a door from any mod works. Nobody needs to carry a key.
 
@@ -14,18 +14,17 @@ Left alone: you sneaking or in combat, you holding the key, your own home, desti
 
 ## Who answers
 
-- A resident is the owner's actor, or any actor placed in the cell, who is alive and enabled. Mannequins are not residents.
-- A resident who is elsewhere at the moment still answers. This is a first-version choice.
-- An actor exists in memory while its cell is unloaded only when it is persistent. A non-persistent resident is not seen. A unique NPC owner with no actor in memory counts as alive unless the game's dead count for that NPC says otherwise.
-- A faction owner with nobody found: still someone's home. It answers by the day rule, and at night by your standing with that faction (its reaction to the player is ally or friend).
-- Everybody placed there is dead: "Nobody answers."
-- A friend is a relationship rank above acquaintance, read from the game.
+Only somebody in the destination cell right now: a living, enabled actor whose current cell is that cell (the owner's choice, 2026-11-05). Nobody there: "Nobody answers." Mannequins do not count. A friend is a relationship rank above acquaintance, read from the game.
+
+An interior that is not loaded holds only its persistent actors in memory, so residents who are not persistent are not seen, and their door says "Nobody answers."
 
 ## Being let in
 
 The door's lock is opened and the cell's Public flag set in memory only, with no change flag on either form, so the game's save carries nothing of it. One let-in exists at a time, kept in a single SKSE co-save record, so a save made inside still works. It ends the next time a load finishes with you in an exterior cell: the door locks again and the cell returns to what it was.
 
 ## Conflicts
+
+Simple Activate works alongside: it hides the first line of a prompt, so while it is loaded the prompt is one line, "Knock: name". Lock Interaction Overhaul's auto-pick and crime apply to Pick the lock as to any picking.
 
 Simpler Knock and its patches do the same job through a perk. Use one or the other.
 

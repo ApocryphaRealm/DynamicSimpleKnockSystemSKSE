@@ -56,6 +56,11 @@ namespace DevBenchTool
 				const auto id = RefFrom(args);
 				out = OnMain([id]() { return knock::KnockJson(id); });
 			}
+			else if (args.find("\"box\"") != std::string_view::npos)
+			{
+				const auto id = RefFrom(args);
+				out = OnMain([id]() { return knock::ChoiceJson(id); });
+			}
 			else if (args.find("\"endletin\"") != std::string_view::npos)
 			{
 				out = OnMain([]() { return knock::EndLetInJson(); });
@@ -97,7 +102,7 @@ namespace DevBenchTool
 		constexpr const char* descriptor =
 			"{"
 			"\"description\":\"Dynamic Simple Knock System SKSE live state and driver. No op: settings, hour, prompt door, the door let open, counters, the last events. "
-			"op=check ref=<hex>: the rule's verdict on a door and the residents found. op=knock ref=<hex>: a press of the activate control on that door. "
+			"op=check ref=<hex>: the rule's verdict on a door and the residents found. op=box ref=<hex>: opens the choice box for that door. op=knock ref=<hex>: the box's Knock button. "
 			"op=endletin ends the let-in now. op=reload re-reads the INI. op=strings reports the language.\","
 			"\"inputSchema\":{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\"},\"ref\":{\"type\":\"string\"}}},"
 			"\"readOnly\":false"

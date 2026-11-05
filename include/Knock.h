@@ -25,6 +25,7 @@ namespace knock
 	// DevBench, on the game's main thread. Each returns one JSON object.
 	std::string StateJson();
 	std::string CheckJson(std::uint32_t a_refID);   // what the rule says about this door, with the residents it found
-	std::string KnockJson(std::uint32_t a_refID);   // a press of the activate control on this door
+	std::string KnockJson(std::uint32_t a_refID);   // the Knock button, without the box
+	std::string ChoiceJson(std::uint32_t a_refID);  // opens the choice box for this door
 	std::string EndLetInJson();
 }

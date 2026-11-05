@@ -7,6 +7,9 @@ LANGS = ["english", "chinese", "czech", "french", "german", "italian", "japanese
 
 T = {
 "DSK_Knock": ["Knock", "敲门", "Zaklepat", "Frapper", "Anklopfen", "Bussa", "ノックする", "노크하기", "Zapukaj", "Постучать", "Llamar"],
+"DSK_ChoiceBody": ["The door is locked.", "门锁着。", "Dveře jsou zamčené.", "La porte est verrouillée.", "Die Tür ist verschlossen.", "La porta è chiusa a chiave.", "扉には鍵がかかっている。", "문이 잠겨 있습니다.", "Drzwi są zamknięte na klucz.", "Дверь заперта.", "La puerta está cerrada con llave."],
+"DSK_ChoicePick": ["Pick the lock", "撬锁", "Vypáčit zámek", "Crocheter la serrure", "Schloss knacken", "Scassina la serratura", "鍵を開ける", "자물쇠 따기", "Otwórz zamek wytrychem", "Взломать замок", "Forzar la cerradura"],
+"DSK_ChoiceLeave": ["Leave", "离开", "Odejít", "Partir", "Gehen", "Vai via", "立ち去る", "떠나기", "Odejdź", "Уйти", "Marcharse"],
 "DSK_ComeIn": ["Come in.", "请进。", "Pojďte dál.", "Entrez.", "Herein.", "Avanti.", "どうぞ。", "들어오세요.", "Proszę wejść.", "Входите.", "Adelante."],
 "DSK_NoAnswer": ["Nobody answers.", "无人应答。", "Nikdo neodpovídá.", "Personne ne répond.", "Niemand antwortet.", "Nessuno risponde.", "返事がない。", "아무도 대답하지 않습니다.", "Nikt nie odpowiada.", "Никто не отвечает.", "Nadie responde."],
 "DSK_TooLate": ["It's late. Come back in the morning.", "太晚了。早上再来吧。", "Je pozdě. Přijďte ráno.", "Il est tard. Revenez demain matin.", "Es ist spät. Komm morgen früh wieder.", "È tardi. Torna domattina.", "もう遅い。朝に出直してくれ。", "늦었습니다. 아침에 다시 오세요.", "Jest późno. Wróć rano.", "Уже поздно. Приходите утром.", "Es tarde. Vuelve por la mañana."],

@@ -6,14 +6,18 @@
 // location with a dungeon keyword, anybody there hostile to the player. Interior-to-interior doors are left alone on purpose:
 // the census shows they are mostly jarls' quarters, temple sanctums and vaults, and nobody knocks from inside the building.
 //
-// WHO ANSWERS. The living residents: the owner's actor and the actors placed in the cell, read from a table built once per
-// game from the forms in memory. Only persistent actors exist in memory while their cell is unloaded, so a non-persistent
-// resident is not seen. A unique owner with no actor in memory is alive unless the game's dead count for that NPC says
-// otherwise. A resident who is elsewhere right now still answers (first version). A faction owner with nobody in memory
-// answers by the player's standing with that faction.
+// WHO ANSWERS (the owner, 2026-11-05). Only somebody in the destination cell right now: a living, enabled actor whose current
+// cell is that cell. Nobody there: "Nobody answers." The actors are read from the forms in memory, so while the cell is unloaded
+// only persistent actors can be seen, and where they are placed by the game while unloaded is what op=check reports.
 //
 // THE PROMPT AND THE PRESS. Virtual functions on the door form: GetActivateText for the words, Activate for the press, so the
-// game's own activate control and its own routing decide the key on keyboard and controller. No key is read here.
+// game's own activate control and its own routing decide the key on keyboard and controller. No key is read here. The press
+// shows a choice: Knock, Pick the lock, Leave. A lock is only ever picked because the player chose it, so a refusal can never
+// fall through to the lockpicking path, and another mod's automatic picking (with its crime) cannot follow a second press.
+//
+// SIMPLE ACTIVATE. po3's Simple Activate rewrites the HUD text after this hook: with Hide Text on doors it drops the first line
+// and colours the name line of a crime door. Its source is public (powerof3/SimpleActivateSKSE). While it is loaded the prompt
+// is one line, "Knock: name", which it neither shortens nor colours; otherwise two lines, as the game writes them.
 //
 // LETTING IN (BeginLetIn). The door's lock is opened in memory and the destination cell's Public flag set in memory, with no
 // change flag on either form, so the game's save carries nothing of it. One let-in at a time, kept in one co-save record so a
@@ -38,6 +42,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include <windows.h>
 
 namespace knock
 {
@@ -90,9 +96,7 @@ namespace knock
 			RE::TESForm* owner{ nullptr };
 			RE::TESNPC* ownerNPC{ nullptr };
 			RE::TESFaction* ownerFaction{ nullptr };
-			std::vector<RE::Actor*> residents;   // living and enabled
-			int placedDead{ 0 };                 // placed there, dead
-			bool ownerAliveUnseen{ false };      // an NPC owner with no actor in memory, not counted dead
+			std::vector<RE::Actor*> residents;   // in the cell now, living and enabled
 		};
 
 		enum class Answer { kLetIn, kNobody, kTooLate };
@@ -105,8 +109,7 @@ namespace knock
 		};
 
 		// The actor table: built once per game, from the forms in memory.
-		std::unordered_map<RE::FormID, std::vector<RE::FormID>> g_actorsByCell;
-		std::unordered_map<RE::FormID, std::vector<RE::FormID>> g_actorsByNPC;
+		std::vector<RE::FormID> g_actors;
 		bool g_tableBuilt = false;
 		std::uint32_t g_tableActors = 0;
 		long long g_tableMs = 0;
@@ -116,7 +119,10 @@ namespace knock
 		std::uint32_t g_excludedUnresolved = 0;
 
 		RE::FormID g_promptDoor = 0;    // the door last shown as Knock
-		RE::FormID g_refusedDoor = 0;   // refused: its own prompt is back until the crosshair leaves it
+		RE::FormID g_choiceDoor = 0;    // the door the choice box is open for
+		bool g_choiceCanPick = false;
+		RE::FormID g_passDoor = 0;      // the next Activate on this door goes to the game untouched
+		bool g_simpleActivate = false;
 		LetIn g_letIn;
 
 		std::uint32_t g_knocks = 0, g_letIns = 0, g_nobody = 0, g_tooLate = 0, g_promptsShown = 0;
@@ -172,19 +178,19 @@ namespace knock
 			return id;
 		}
 
+		// Every actor in memory. Rebuilt for a knock, so actors of a cell still loaded count.
 		void BuildTable()
 		{
 			if (g_tableBuilt) { return; }
 			g_tableBuilt = true;
-			g_actorsByCell.clear();
-			g_actorsByNPC.clear();
+			g_actors.clear();
 			g_tableActors = 0;
 			const auto start = std::chrono::steady_clock::now();
 
 			const auto& [map, lock] = RE::TESForm::GetAllForms();
 			if (!map)
 			{
-				logger::warn("the game's form table is not available; only faction standing can answer");
+				logger::warn("the game's form table is not available; nobody can answer");
 				return;
 			}
 			RE::BSReadLockGuard guard{ lock };
@@ -193,40 +199,24 @@ namespace knock
 				if (!form || form->GetFormType() != RE::FormType::ActorCharacter) { continue; }
 				auto* actor = form->As<RE::Actor>();
 				if (!actor || actor->IsPlayerRef()) { continue; }
-				++g_tableActors;
-				auto* base = actor->GetActorBase();
-				if (base) { g_actorsByNPC[base->GetFormID()].push_back(id); }
-
-				// Where it was placed, which stays the same when its schedule takes it elsewhere.
-				RE::NiPoint3 pos, rot;
-				RE::TESForm* worldOrCell = nullptr;
-				auto* home = actor->GetParentCell();
-				if (actor->GetEditorLocation2(pos, rot, worldOrCell, home) && worldOrCell)
-				{
-					if (auto* c = worldOrCell->As<RE::TESObjectCELL>()) { home = c; }
-				}
-				if (home) { g_actorsByCell[home->GetFormID()].push_back(id); }
+				g_actors.push_back(id);
 			}
+			g_tableActors = static_cast<std::uint32_t>(g_actors.size());
 			g_tableMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
-			logger::info("actor table: {} actors in memory, {} cells, {} ms", g_tableActors, g_actorsByCell.size(), g_tableMs);
+			logger::debug("actor table: {} actors in memory, {} ms", g_tableActors, g_tableMs);
+		}
+
+		// Where the game holds this actor now.
+		RE::TESObjectCELL* CurrentCell(const RE::Actor* a_actor)
+		{
+			auto* cell = a_actor->GetParentCell();
+			return cell ? cell : a_actor->GetSaveParentCell();
 		}
 
 		bool IsMannequin(RE::Actor* a_actor)
 		{
 			auto* race = a_actor ? a_actor->GetRace() : nullptr;
 			return race && race->GetLocalFormID() == kManakinRace;
-		}
-
-		// The game's own per-NPC dead count, which holds for an NPC with no actor in memory.
-		bool DeadByCount(const RE::TESNPC* a_npc)
-		{
-			auto* tes = RE::TES::GetSingleton();
-			if (!tes || !a_npc) { return false; }
-			for (const auto* entry : tes->GetRuntimeData2().deadCount)
-			{
-				if (entry && entry->first == a_npc) { return entry->second > 0; }
-			}
-			return false;
 		}
 
 		RE::FIGHT_REACTION ReactionToPlayer(RE::TESFaction* a_faction)
@@ -311,30 +301,11 @@ namespace knock
 			}
 
 			BuildTable();
-			std::unordered_set<RE::FormID> seen;
-			auto consider = [&](RE::FormID a_id) {
-				if (!seen.insert(a_id).second) { return; }
-				auto* actor = RE::TESForm::LookupByID<RE::Actor>(a_id);
-				if (!actor || actor->IsDisabled() || IsMannequin(actor)) { return; }
-				if (actor->IsDead()) { ++a_home.placedDead; return; }
+			for (const auto id : g_actors)
+			{
+				auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
+				if (!actor || CurrentCell(actor) != cell || actor->IsDisabled() || actor->IsDead() || IsMannequin(actor)) { continue; }
 				a_home.residents.push_back(actor);
-			};
-			if (const auto it = g_actorsByCell.find(cell->GetFormID()); it != g_actorsByCell.end())
-			{
-				for (const auto id : it->second) { consider(id); }
-			}
-			bool ownerInMemory = false;
-			if (a_home.ownerNPC)
-			{
-				if (const auto it = g_actorsByNPC.find(a_home.ownerNPC->GetFormID()); it != g_actorsByNPC.end() && !it->second.empty())
-				{
-					ownerInMemory = true;
-					for (const auto id : it->second) { consider(id); }
-				}
-				if (!ownerInMemory)
-				{
-					a_home.ownerAliveUnseen = !DeadByCount(a_home.ownerNPC);
-				}
 			}
 
 			if (!owner && a_home.residents.empty()) { return Verdict::kNotAHome; }
@@ -344,7 +315,7 @@ namespace knock
 			{
 				if (actor->IsHostileToActor(player)) { return Verdict::kHostile; }
 			}
-			if (a_home.ownerNPC && !ownerInMemory)
+			if (a_home.ownerNPC)
 			{
 				for (const auto& rank : a_home.ownerNPC->factions)
 				{
@@ -381,20 +352,12 @@ namespace knock
 			{
 				if (IsFriend(actor->GetActorBase())) { return true; }
 			}
-			if (a_home.ownerAliveUnseen && IsFriend(a_home.ownerNPC)) { return true; }
-			if (a_home.ownerFaction)
-			{
-				const auto reaction = ReactionToPlayer(a_home.ownerFaction);
-				if (reaction == RE::FIGHT_REACTION::kAlly || reaction == RE::FIGHT_REACTION::kFriend) { return true; }
-			}
 			return false;
 		}
 
 		Answer Decide(const Home& a_home)
 		{
-			const bool standingOnly = a_home.ownerFaction && a_home.residents.empty() && a_home.placedDead == 0;
-			const bool someone = !a_home.residents.empty() || a_home.ownerAliveUnseen || standingOnly;
-			if (!someone) { return Answer::kNobody; }
+			if (a_home.residents.empty()) { return Answer::kNobody; }
 			if (IsDay() || FriendInside(a_home)) { return Answer::kLetIn; }
 			return Answer::kTooLate;
 		}
@@ -443,7 +406,7 @@ namespace knock
 			case Answer::kNobody:
 				++g_nobody;
 				Notify(strings::TR("DSK_NoAnswer", "Nobody answers."));
-				Event(std::format("knock on {:08X} ({}): nobody alive to answer", a_door->GetFormID(), day));
+				Event(std::format("knock on {:08X} ({}): nobody in cell {:08X} now", a_door->GetFormID(), day, a_home.cell->GetFormID()));
 				break;
 			case Answer::kTooLate:
 				++g_tooLate;
@@ -451,10 +414,75 @@ namespace knock
 				Event(std::format("knock on {:08X} ({}): refused, not a friend", a_door->GetFormID(), day));
 				break;
 			}
-			g_refusedDoor = a_door->GetFormID();
-			g_promptDoor = 0;
-			Dirty();
 			return false;
+		}
+
+		// Runs the game's own Activate on the door, past our hook: the door opens if it is open, and the game's lock path runs if not.
+		void PassToGame(RE::TESObjectREFR* a_door)
+		{
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (!a_door || !player) { return; }
+			g_passDoor = a_door->GetFormID();
+			a_door->ActivateRef(player, 0, nullptr, 1, false);
+			g_passDoor = 0;
+		}
+
+		void OnChoice(std::uint8_t a_button)
+		{
+			const RE::FormID id = g_choiceDoor;
+			const bool canPick = g_choiceCanPick;
+			g_choiceDoor = 0;
+			auto* tasks = SKSE::GetTaskInterface();
+			if (!id || !tasks) { return; }
+			// After the box has closed, on the main thread.
+			tasks->AddTask([id, canPick, a_button]() {
+				auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(id);
+				if (!door) { return; }
+				if (a_button == 0)
+				{
+					g_tableBuilt = false;   // who is in memory at this moment
+					Home home;
+					const auto verdict = Classify(door, home);
+					if (verdict != Verdict::kHome)
+					{
+						Event(std::format("knock on {:08X} dropped: {}", id, Name(verdict)));
+						return;
+					}
+					if (DoKnock(door, home)) { PassToGame(door); }
+				}
+				else if (a_button == 1 && canPick)
+				{
+					Event(std::format("player chose to pick {:08X}", id));
+					PassToGame(door);
+				}
+			});
+		}
+
+		bool ShowChoice(RE::TESObjectREFR* a_door, const Home& a_home)
+		{
+			// Signature from CommonLibSSE-NG 7.2's MessageBoxMenu::Create, the same function on every runtime: it reads
+			// the buttons up to a nullptr and hands the callback the button's index plus the offset.
+			using func_t = bool(const char*, void (*)(std::uint8_t), std::uint8_t, std::int32_t, std::int32_t, ...);
+			static REL::Relocation<func_t> create{ RELOCATION_ID(51420, 52269) };
+
+			const char* place = a_home.cell ? a_home.cell->GetFullName() : nullptr;
+			if (!place || !place[0]) { place = a_door->GetDisplayFullName(); }
+			const std::string body = std::format("{}\n{}", place ? place : "", strings::TR("DSK_ChoiceBody", "The door is locked."));
+
+			g_choiceDoor = a_door->GetFormID();
+			g_choiceCanPick = a_door->GetLockLevel() != RE::LOCK_LEVEL::kRequiresKey;
+			const char* knockText = strings::TR("DSK_Knock", "Knock");
+			const char* pickText = strings::TR("DSK_ChoicePick", "Pick the lock");
+			const char* leaveText = strings::TR("DSK_ChoiceLeave", "Leave");
+			// A key-only lock cannot be picked, so it has no such button; Leave then sits where a press does nothing.
+			const bool shown = g_choiceCanPick ? create(body.c_str(), OnChoice, std::uint8_t{ 0 }, 0, 10, knockText, pickText, leaveText, nullptr) :
+			                                     create(body.c_str(), OnChoice, std::uint8_t{ 0 }, 0, 10, knockText, leaveText, nullptr);
+			if (!shown)
+			{
+				g_choiceDoor = 0;
+				logger::warn("the choice box for {:08X} did not open", a_door->GetFormID());
+			}
+			return shown;
 		}
 
 		struct DoorHooks
@@ -466,21 +494,18 @@ namespace knock
 				if (a_ref && a_ref->GetBaseObject() == a_this)
 				{
 					const auto id = a_ref->GetFormID();
-					if (g_refusedDoor != 0 && g_refusedDoor != id) { g_refusedDoor = 0; }
-					if (g_refusedDoor != id)
+					Home home;
+					const auto verdict = Classify(a_ref, home);
+					logger::debug("prompt on {:08X}: {}", id, Name(verdict));
+					if (verdict == Verdict::kHome)
 					{
-						Home home;
-						const auto verdict = Classify(a_ref, home);
-						logger::debug("prompt on {:08X}: {}", id, Name(verdict));
-						if (verdict == Verdict::kHome)
-						{
-							g_promptDoor = id;
-							++g_promptsShown;
-							const char* name = home.cell ? home.cell->GetFullName() : nullptr;
-							if (!name || !name[0]) { name = a_ref->GetDisplayFullName(); }
-							a_dst = std::format("{}\n{}", strings::TR("DSK_Knock", "Knock"), name ? name : "").c_str();
-							return true;
-						}
+						g_promptDoor = id;
+						++g_promptsShown;
+						const char* name = home.cell ? home.cell->GetFullName() : nullptr;
+						if (!name || !name[0]) { name = a_ref->GetDisplayFullName(); }
+						const char* word = strings::TR("DSK_Knock", "Knock");
+						a_dst = (g_simpleActivate ? std::format("{}: {}", word, name ? name : "") : std::format("{}\n{}", word, name ? name : "")).c_str();
+						return true;
 					}
 					if (g_promptDoor == id) { g_promptDoor = 0; }
 				}
@@ -489,12 +514,12 @@ namespace knock
 
 			static bool Activate(RE::TESObjectDOOR* a_this, RE::TESObjectREFR* a_target, RE::TESObjectREFR* a_activator, std::uint8_t a_arg3, RE::TESBoundObject* a_object, std::int32_t a_count)
 			{
-				if (a_target && a_activator && a_activator->IsPlayerRef() && a_target->GetFormID() == g_promptDoor && g_refusedDoor != g_promptDoor)
+				if (a_target && a_activator && a_activator->IsPlayerRef() && a_target->GetFormID() != g_passDoor && a_target->GetFormID() == g_promptDoor)
 				{
 					Home home;
-					if (Classify(a_target, home) == Verdict::kHome && !DoKnock(a_target, home))
+					if (Classify(a_target, home) == Verdict::kHome && ShowChoice(a_target, home))
 					{
-						return true;   // refused: the door stays locked and nothing else happens
+						return true;
 					}
 				}
 				return _Activate(a_this, a_target, a_activator, a_arg3, a_object, a_count);
@@ -505,8 +530,7 @@ namespace knock
 		};
 
 		struct Sinks :
-			public RE::BSTEventSink<RE::MenuOpenCloseEvent>,
-			public RE::BSTEventSink<SKSE::CrosshairRefEvent>
+			public RE::BSTEventSink<RE::MenuOpenCloseEvent>
 		{
 			static Sinks* Get()
 			{
@@ -521,16 +545,6 @@ namespace knock
 					auto* player = RE::PlayerCharacter::GetSingleton();
 					auto* cell = player ? player->GetParentCell() : nullptr;
 					if (cell && !cell->IsInteriorCell()) { EndLetIn("the player is outside"); }
-				}
-				return RE::BSEventNotifyControl::kContinue;
-			}
-
-			RE::BSEventNotifyControl ProcessEvent(const SKSE::CrosshairRefEvent* a_event, RE::BSTEventSource<SKSE::CrosshairRefEvent>*) override
-			{
-				if (a_event && g_refusedDoor != 0)
-				{
-					const auto* ref = a_event->crosshairRef.get();
-					if (!ref || ref->GetFormID() != g_refusedDoor) { g_refusedDoor = 0; }
 				}
 				return RE::BSEventNotifyControl::kContinue;
 			}
@@ -552,14 +566,9 @@ namespace knock
 		{
 			logger::error("the UI singleton is not ready; a let-in will only end at the next knock");
 		}
-		if (auto* crosshair = SKSE::GetCrosshairRefEventSource())
-		{
-			crosshair->AddEventSink(Sinks::Get());
-		}
-		else
-		{
-			logger::warn("no crosshair event source; a refused door keeps its own prompt until another door is looked at");
-		}
+
+		g_simpleActivate = GetModuleHandleW(L"po3_SimpleActivateSKSE") != nullptr;
+		logger::info("Simple Activate {}: the prompt is {}", g_simpleActivate ? "is loaded" : "is not loaded", g_simpleActivate ? "one line" : "two lines");
 	}
 
 	void ResolveExclusions()
@@ -592,13 +601,13 @@ namespace knock
 	{
 		g_tableBuilt = false;
 		g_promptDoor = 0;
-		g_refusedDoor = 0;
+		g_choiceDoor = 0;
+		g_passDoor = 0;
 	}
 
 	void RefreshPrompt()
 	{
 		g_promptDoor = 0;
-		g_refusedDoor = 0;
 		Dirty();
 	}
 
@@ -641,14 +650,14 @@ namespace knock
 		std::string events;
 		for (const auto& e : g_events) { events += (events.empty() ? "\"" : ",\"") + Escape(e) + "\""; }
 		return std::format(
-			"{{\"ok\":true,\"enabled\":{},\"dayStart\":{},\"dayEnd\":{},\"hour\":{:.2f},\"isDay\":{},\"promptDoor\":\"{:08X}\",\"refusedDoor\":\"{:08X}\","
+			"{{\"ok\":true,\"enabled\":{},\"dayStart\":{},\"dayEnd\":{},\"hour\":{:.2f},\"isDay\":{},\"simpleActivate\":{},\"promptDoor\":\"{:08X}\",\"choiceDoor\":\"{:08X}\","
 			"\"letIn\":{{\"door\":\"{:08X}\",\"cell\":\"{:08X}\",\"cellWasPublic\":{}}},"
-			"\"table\":{{\"built\":{},\"actors\":{},\"cells\":{},\"ms\":{}}},"
+			"\"table\":{{\"built\":{},\"actors\":{},\"ms\":{}}},"
 			"\"exclusions\":{{\"forms\":{},\"editorIDs\":{},\"unresolved\":{}}},"
 			"\"counts\":{{\"prompts\":{},\"knocks\":{},\"letIn\":{},\"nobody\":{},\"tooLate\":{}}},\"events\":[{}]}}",
-			settings::enabled, settings::dayStartHour, settings::dayEndHour, calendar ? calendar->GetHour() : -1.0F, IsDay(), g_promptDoor, g_refusedDoor,
+			settings::enabled, settings::dayStartHour, settings::dayEndHour, calendar ? calendar->GetHour() : -1.0F, IsDay(), g_simpleActivate, g_promptDoor, g_choiceDoor,
 			g_letIn.door, g_letIn.cell, g_letIn.cellWasPublic,
-			g_tableBuilt, g_tableActors, g_actorsByCell.size(), g_tableMs,
+			g_tableBuilt, g_tableActors, g_tableMs,
 			g_excludedIDs.size(), g_excludedEditorIDs.size(), g_excludedUnresolved,
 			g_promptsShown, g_knocks, g_letIns, g_nobody, g_tooLate, events);
 	}
@@ -657,6 +666,7 @@ namespace knock
 	{
 		auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(a_refID);
 		if (!door) { return std::format("{{\"ok\":false,\"error\":\"no reference {:08X}\"}}", a_refID); }
+		g_tableBuilt = false;
 		Home home;
 		const auto verdict = Classify(door, home);
 		std::string residents;
@@ -664,22 +674,46 @@ namespace knock
 		{
 			residents += std::format("{}{{\"id\":\"{:08X}\",\"name\":\"{}\",\"friend\":{}}}", residents.empty() ? "" : ",", actor->GetFormID(), Escape(actor->GetDisplayFullName()), IsFriend(actor->GetActorBase()));
 		}
+		// Who the owner's and the cell's people are by name, and where the game holds them: the proof of what an unloaded cell shows.
+		std::string people;
+		for (const auto id : g_actors)
+		{
+			auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
+			if (!actor || !home.cell) { continue; }
+			const bool ownersNPC = home.ownerNPC && actor->GetActorBase() == home.ownerNPC;
+			const bool member = home.ownerFaction && actor->IsInFaction(home.ownerFaction);
+			if (!ownersNPC && !member) { continue; }
+			const auto* parent = actor->GetParentCell();
+			const auto* save = actor->GetSaveParentCell();
+			people += std::format("{}{{\"id\":\"{:08X}\",\"name\":\"{}\",\"parent\":\"{:08X}\",\"save\":\"{:08X}\",\"process\":{},\"dead\":{},\"disabled\":{}}}", people.empty() ? "" : ",",
+				id, Escape(actor->GetDisplayFullName()), parent ? parent->GetFormID() : 0, save ? save->GetFormID() : 0, actor->GetActorRuntimeData().currentProcess != nullptr, actor->IsDead(), actor->IsDisabled());
+		}
 		const char* answer = verdict != Verdict::kHome ? "none" : (Decide(home) == Answer::kLetIn ? "let in" : (Decide(home) == Answer::kNobody ? "nobody" : "too late"));
 		return std::format(
-			"{{\"ok\":true,\"verdict\":\"{}\",\"answer\":\"{}\",\"cell\":\"{:08X}\",\"owner\":\"{:08X}\",\"ownerType\":\"{}\",\"placedDead\":{},\"ownerAliveUnseen\":{},\"residents\":[{}]}}",
-			Name(verdict), answer, home.cell ? home.cell->GetFormID() : 0, home.owner ? home.owner->GetFormID() : 0,
-			home.ownerNPC ? "npc" : (home.ownerFaction ? "faction" : (home.owner ? "other" : "none")), home.placedDead, home.ownerAliveUnseen, residents);
+			"{{\"ok\":true,\"verdict\":\"{}\",\"answer\":\"{}\",\"cell\":\"{:08X}\",\"cellAttached\":{},\"owner\":\"{:08X}\",\"ownerType\":\"{}\",\"residents\":[{}],\"ownerPeople\":[{}]}}",
+			Name(verdict), answer, home.cell ? home.cell->GetFormID() : 0, home.cell ? home.cell->IsAttached() : false, home.owner ? home.owner->GetFormID() : 0,
+			home.ownerNPC ? "npc" : (home.ownerFaction ? "faction" : (home.owner ? "other" : "none")), residents, people);
 	}
 
 	std::string KnockJson(std::uint32_t a_refID)
 	{
 		auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(a_refID);
-		auto* player = RE::PlayerCharacter::GetSingleton();
-		if (!door || !player) { return std::format("{{\"ok\":false,\"error\":\"no reference {:08X}\"}}", a_refID); }
-		g_promptDoor = a_refID;
-		g_refusedDoor = 0;
-		const bool done = door->ActivateRef(player, 0, nullptr, 1, false);
-		return std::format("{{\"ok\":true,\"activated\":{},\"state\":{}}}", done, StateJson());
+		if (!door) { return std::format("{{\"ok\":false,\"error\":\"no reference {:08X}\"}}", a_refID); }
+		Home home;
+		const auto verdict = Classify(door, home);
+		if (verdict != Verdict::kHome) { return std::format("{{\"ok\":false,\"verdict\":\"{}\"}}", Name(verdict)); }
+		if (DoKnock(door, home)) { PassToGame(door); }
+		return std::format("{{\"ok\":true,\"state\":{}}}", StateJson());
+	}
+
+	std::string ChoiceJson(std::uint32_t a_refID)
+	{
+		auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(a_refID);
+		if (!door) { return std::format("{{\"ok\":false,\"error\":\"no reference {:08X}\"}}", a_refID); }
+		Home home;
+		const auto verdict = Classify(door, home);
+		if (verdict != Verdict::kHome) { return std::format("{{\"ok\":false,\"verdict\":\"{}\"}}", Name(verdict)); }
+		return std::format("{{\"ok\":{}}}", ShowChoice(door, home));
 	}
 
 	std::string EndLetInJson()
