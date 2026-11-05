@@ -1,0 +1,69 @@
+// Dynamic Simple Knock System SKSE - own code, GPL-3.0-or-later. Knock on the locked door of somebody's home: no plugin, no patches,
+// read from the game's own data. See the head of source/Knock.cpp.
+#include "PCH.h"
+
+#include "DevBenchTool.h"
+#include "Knock.h"
+#include "Settings.h"
+#include "UI.h"
+
+#include "utils/AddressLibraryGuard.h"
+#include "utils/Logger.h"
+#include "utils/Strings.h"
+
+namespace
+{
+	void MessageHandler(SKSE::MessagingInterface::Message* a_msg)
+	{
+		if (!a_msg) { return; }
+		switch (a_msg->type)
+		{
+		case SKSE::MessagingInterface::kPostLoad:
+			DevBenchTool::Init(false);
+			break;
+		case SKSE::MessagingInterface::kDataLoaded:
+			strings::Configure("DynamicSimpleKnock");
+			knock::ResolveExclusions();
+			knock::Install();
+			UI::Register();
+			DevBenchTool::Init(true);
+			break;
+		case SKSE::MessagingInterface::kPostLoadGame:
+		case SKSE::MessagingInterface::kNewGame:
+			knock::OnGameLoaded();
+			break;
+		default:
+			break;
+		}
+	}
+}
+
+SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
+{
+	SKSE::log::init("DynamicSimpleKnock");
+	// Address Library pre-check, BEFORE SKSE::Init, which opens the Address Library itself: a missing file gets a message
+	// naming it and the plugin loads inert instead of CommonLibSSE-NG's bare failure line.
+	if (!AddressLibraryGuard::Guard("Dynamic Simple Knock System SKSE")) { return true; }
+	SKSE::Init(a_skse);
+
+	settings::Init("DynamicSimpleKnock.ini");
+	settings::ApplyLogLevel();
+	SKSE::log::describe_level("DynamicSimpleKnock.ini");
+	logger::info("Dynamic Simple Knock System SKSE {} loading", SKSE::PluginDeclaration::GetSingleton()->GetVersion().string("."));
+	logger::info("Build line: {}", RUNTIME_LINE == 17 ? "Skyrim 1.7.x" : "SE 1.5.97 / AE 1.6.x");
+
+	auto* messaging = SKSE::GetMessagingInterface();
+	if (!messaging || !messaging->RegisterListener(MessageHandler))
+	{
+		logger::error("could not register the SKSE message listener; the mod stands down");
+		return true;
+	}
+	if (auto* serialization = SKSE::GetSerializationInterface())
+	{
+		serialization->SetUniqueID('DSKS');
+		serialization->SetSaveCallback(knock::OnSave);
+		serialization->SetLoadCallback(knock::OnLoad);
+		serialization->SetRevertCallback(knock::OnRevert);
+	}
+	return true;
+}

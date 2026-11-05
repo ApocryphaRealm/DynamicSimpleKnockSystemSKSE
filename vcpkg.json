@@ -1,0 +1,12 @@
+{
+    "name": "dynamicsimpleknock",
+    "version-string": "1.0.0",
+    "description": "Dynamic Simple Knock System SKSE - knock on the locked door of somebody's home, read from the game's own ownership data",
+    "homepage": "https://github.com/ApocryphaRealm/DynamicSimpleKnock",
+    "license": "GPL-3.0-or-later",
+    "dependencies": [
+        "commonlibsse-ng",
+        "spdlog"
+    ],
+    "builtin-baseline": "8d3649ba34aab36914ddd897958599aa0a91b08e"
+}
