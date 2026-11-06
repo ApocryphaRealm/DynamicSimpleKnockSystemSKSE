@@ -8,7 +8,7 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 * **failed** - built but crashed or malfunctioned; the number was reclaimed
 * **scratch** - a hypothesis-test build that never held a real number
 
-## 1.1.0 - 2026-11-06 - untested
+## 1.1.0 - 2026-11-06 - working
 
 ### Added
 - Peek through the keyhole: with Take a Peek installed, the knock box (and the refusal box when there is room) offers its peek; without it the choice is not shown
