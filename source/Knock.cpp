@@ -120,7 +120,7 @@ namespace knock
 			const char* method{ "none" };       // how they were found
 		};
 
-		enum class Act : std::uint8_t { kKnock, kPersuade, kIntimidate, kPick, kLeave };
+		enum class Act : std::uint8_t { kKnock, kPersuade, kIntimidate, kPick, kLeave, kPeek };
 
 		// What the decision weighs, read from the game (or set through DevBench, see Overrides).
 		struct Inputs
@@ -711,6 +711,7 @@ namespace knock
 			case Act::kIntimidate: return strings::TR("DSK_ChoiceIntimidate", "Intimidate");
 			case Act::kPick: return strings::TR("DSK_ChoicePick", "Pick the lock");
 			case Act::kLeave: return strings::TR("DSK_ChoiceLeave", "Leave");
+			case Act::kPeek: return strings::TR("DSK_ChoicePeek", "Peek through the keyhole");
 			}
 			return "?";
 		}
@@ -724,11 +725,55 @@ namespace knock
 			case Act::kIntimidate: return "intimidate";
 			case Act::kPick: return "pick";
 			case Act::kLeave: return "leave";
+			case Act::kPeek: return "peek";
 			}
 			return "?";
 		}
 
 		void OnChoice(std::uint8_t a_button);
+
+		// PEEK (the owner, 2026-11-06). With Take a Peek (Nexus 66908) loaded, the boxes offer its peek: the same function its
+		// hold-Sneak and ability paths call, Keyhole_Exit.TakingAPeek() on its quest's player alias. It reads the crosshair for
+		// the door and refuses a drawn weapon or a fight itself, with its own messages. Without it the choice is not shown.
+		constexpr const char* kPeekPlugin = "Take A Peek - New Stealth Mechanic.esp";
+		constexpr RE::FormID kPeekQuest = 0x802;  // Keyhole_Quest
+
+		RE::TESQuest* PeekQuest()
+		{
+			static bool looked = false;
+			static RE::TESQuest* quest = nullptr;
+			if (!looked)
+			{
+				auto* data = RE::TESDataHandler::GetSingleton();
+				if (!data) { return nullptr; }
+				looked = true;
+				quest = data->LookupForm<RE::TESQuest>(kPeekQuest, kPeekPlugin);
+				logger::info("Take a Peek {}", quest ? "loaded: the knock boxes offer Peek" : "not loaded: no Peek choice");
+			}
+			return quest;
+		}
+
+		bool Peek()
+		{
+			auto* quest = PeekQuest();
+			auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+			auto* policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
+			if (!quest || !policy) { return false; }
+			for (auto* base : quest->aliases)
+			{
+				auto* alias = base ? skyrim_cast<RE::BGSRefAlias*>(base) : nullptr;
+				if (!alias) { continue; }
+				const RE::VMHandle handle = policy->GetHandleForObject(RE::BGSRefAlias::VMTYPEID, alias);
+				if (handle == 0) { continue; }
+				RE::BSTSmartPointer<RE::BSScript::Object> object;
+				if (!vm->FindBoundObject(handle, "Keyhole_Exit", object) || !object) { continue; }
+				auto args = RE::MakeFunctionArguments();
+				RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
+				return vm->DispatchMethodCall(handle, RE::BSFixedString("Keyhole_Exit"), RE::BSFixedString("TakingAPeek"), args, callback);
+			}
+			logger::warn("Take a Peek: no alias carries Keyhole_Exit; the peek was not sent");
+			return false;
+		}
 
 		bool ShowBox(RE::TESObjectREFR* a_door, const std::string& a_body, std::vector<Act> a_acts)
 		{
@@ -764,6 +809,7 @@ namespace knock
 		{
 			std::vector<Act> acts{ Act::kKnock };
 			if (CanPick(a_door)) { acts.push_back(Act::kPick); }
+			if (PeekQuest()) { acts.push_back(Act::kPeek); }
 			acts.push_back(Act::kLeave);
 			return ShowBox(a_door, std::format("{}\n{}", Place(a_door, a_home), strings::TR("DSK_ChoiceBody", "The door is locked.")), std::move(acts));
 		}
@@ -775,6 +821,7 @@ namespace knock
 			if (!g_refusal.triedPersuade) { acts.push_back(Act::kPersuade); }
 			if (!g_refusal.triedIntimidate) { acts.push_back(Act::kIntimidate); }
 			if (CanPick(a_door)) { acts.push_back(Act::kPick); }
+			if (acts.size() < 3 && PeekQuest()) { acts.push_back(Act::kPeek); }  // the box holds four buttons, Leave included
 			acts.push_back(Act::kLeave);
 			auto* speaker = RE::TESForm::LookupByID<RE::Actor>(g_refusal.speaker);
 			return ShowBox(a_door, std::format("{}\n{}", Place(a_door, a_home), WithName(strings::TR("DSK_RefusedBody", "{name} won't open the door."), speaker)), std::move(acts));
@@ -888,6 +935,11 @@ namespace knock
 			auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(a_id);
 			if (!door) { return; }
 			if (a_act == Act::kLeave) { return; }
+			if (a_act == Act::kPeek)
+			{
+				Event(std::format("player chose to peek through {:08X}: {}", a_id, Peek() ? "sent to Take a Peek" : "not sent"));
+				return;
+			}
 			if (a_act == Act::kPick)
 			{
 				Event(std::format("player chose to pick {:08X}", a_id));
