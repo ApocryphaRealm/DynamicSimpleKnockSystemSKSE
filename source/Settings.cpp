@@ -29,6 +29,26 @@ namespace settings
 			return a_s.substr(b, e - b + 1);
 		}
 
+		struct IntKey
+		{
+			const char* name;   // lower case, as the reader compares
+			int* target;
+			int lo;
+			int hi;
+		};
+
+		// The [Decision] section, one row per key: the INI name (lower case), the value and its range.
+		std::vector<IntKey>& DecisionKeys()
+		{
+			static std::vector<IntKey> keys = {
+				{ "ifriendrank", &friendRank, 1, 4 }, { "iknockspeech", &knockSpeech, 0, 200 }, { "ipersuadespeech", &persuadeSpeech, 0, 200 },
+				{ "inightpenalty", &nightPenalty, 0, 100 }, { "iasleeppenalty", &asleepPenalty, 0, 100 }, { "ibountygold", &bountyGold, 0, 100000 },
+				{ "ibountypenalty", &bountyPenalty, 0, 100 }, { "ithiefgold", &thiefGold, 0, 100000 }, { "ithiefpenalty", &thiefPenalty, 0, 100 },
+				{ "idislikepenalty", &dislikePenalty, 0, 100 }, { "iintimidatemargin", &intimidateMargin, -100, 100 }, { "iretryhours", &retryHours, 0, 72 }
+			};
+			return keys;
+		}
+
 		bool LoadFileValues()
 		{
 			std::ifstream in(iniPath);
@@ -55,6 +75,15 @@ namespace settings
 					else if (section == "general" && key == "idaystarthour") { dayStartHour = std::clamp(std::stoi(value), 0, 24); }
 					else if (section == "general" && key == "idayendhour") { dayEndHour = std::clamp(std::stoi(value), 0, 24); }
 					else if (section == "debug" && key == "uloglevel") { logLevel = static_cast<std::uint32_t>(std::stoul(value, nullptr, 0)); }
+					else if (section == "decision")
+					{
+						for (auto& [name, target, lo, hi] : DecisionKeys())
+						{
+							if (key == name) { *target = std::clamp(std::stoi(value), lo, hi); }
+						}
+					}
+					else if (section == "voice" && key == "sletintopic") { letInTopic = value; }
+					else if (section == "voice" && key == "srefusetopic") { refuseTopic = value; }
 				}
 				catch (...)
 				{
@@ -62,6 +91,9 @@ namespace settings
 				}
 			}
 			logger::info("settings read from {}: enabled={} day={}-{} exclusions={} logLevel={}", iniPath, enabled, dayStartHour, dayEndHour, exclusions.size(), logLevel);
+			logger::info("decision: friendRank={} knockSpeech={} persuadeSpeech={} night+{} asleep+{} bounty>={}:+{} thief>={}:+{} dislike+{}/rank intimidateMargin={} retryHours={}",
+				friendRank, knockSpeech, persuadeSpeech, nightPenalty, asleepPenalty, bountyGold, bountyPenalty, thiefGold, thiefPenalty, dislikePenalty, intimidateMargin, retryHours);
+			logger::info("voice: let in {}, refuse {}", letInTopic, refuseTopic);
 			return true;
 		}
 
@@ -127,6 +159,18 @@ namespace settings
 		WriteKey(lines, "General", "bEnabled", enabled ? "1" : "0");
 		WriteKey(lines, "General", "iDayStartHour", std::to_string(dayStartHour));
 		WriteKey(lines, "General", "iDayEndHour", std::to_string(dayEndHour));
+		WriteKey(lines, "Decision", "iFriendRank", std::to_string(friendRank));
+		WriteKey(lines, "Decision", "iKnockSpeech", std::to_string(knockSpeech));
+		WriteKey(lines, "Decision", "iPersuadeSpeech", std::to_string(persuadeSpeech));
+		WriteKey(lines, "Decision", "iNightPenalty", std::to_string(nightPenalty));
+		WriteKey(lines, "Decision", "iAsleepPenalty", std::to_string(asleepPenalty));
+		WriteKey(lines, "Decision", "iBountyGold", std::to_string(bountyGold));
+		WriteKey(lines, "Decision", "iBountyPenalty", std::to_string(bountyPenalty));
+		WriteKey(lines, "Decision", "iThiefGold", std::to_string(thiefGold));
+		WriteKey(lines, "Decision", "iThiefPenalty", std::to_string(thiefPenalty));
+		WriteKey(lines, "Decision", "iDislikePenalty", std::to_string(dislikePenalty));
+		WriteKey(lines, "Decision", "iIntimidateMargin", std::to_string(intimidateMargin));
+		WriteKey(lines, "Decision", "iRetryHours", std::to_string(retryHours));
 		WriteKey(lines, "Debug", "uLogLevel", std::to_string(logLevel));
 
 		std::ofstream out(iniPath, std::ios::trunc);
@@ -145,6 +189,18 @@ namespace settings
 		enabled = true;
 		dayStartHour = 8;
 		dayEndHour = 20;
+		friendRank = 1;
+		knockSpeech = 50;
+		persuadeSpeech = 30;
+		nightPenalty = 15;
+		asleepPenalty = 15;
+		bountyGold = 1;
+		bountyPenalty = 25;
+		thiefGold = 1;
+		thiefPenalty = 20;
+		dislikePenalty = 15;
+		intimidateMargin = 0;
+		retryHours = 1;
 	}
 
 	void ApplyLogLevel()

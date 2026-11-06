@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <string>
 
 namespace knock
@@ -8,7 +10,7 @@ namespace knock
 	// The two door hooks and the event sinks. Once, at kDataLoaded.
 	void Install();
 
-	// Reads the [Exclusions] list into form IDs. At kDataLoaded and after a settings reload.
+	// Reads the [Exclusions] list into form IDs and the [Voice] topics. At kDataLoaded and after a settings reload.
 	void ResolveExclusions();
 
 	// Forgets the actor table so it is built again on the next door. At kPostLoadGame and kNewGame.
@@ -24,8 +26,10 @@ namespace knock
 
 	// DevBench, on the game's main thread. Each returns one JSON object.
 	std::string StateJson();
-	std::string CheckJson(std::uint32_t a_refID);   // what the rule says about this door, with the residents it found
-	std::string KnockJson(std::uint32_t a_refID);   // the Knock button, without the box
-	std::string ChoiceJson(std::uint32_t a_refID);  // opens the choice box for this door
+	std::string CheckJson(std::uint32_t a_refID);                  // the rule's verdict, the residents, and the decision it would make now
+	std::string ActJson(std::uint32_t a_refID, const char* a_act); // "knock", "persuade" or "intimidate", as the box's button does
+	std::string ChoiceJson(std::uint32_t a_refID, bool a_refusalBox); // opens the knock box, or the refusal box
+	// Decision overrides: a_field("speech") etc. returns the number sent, if any. a_clear drops them all.
+	std::string SetJson(const std::function<std::optional<int>(const char*)>& a_field, bool a_clear);
 	std::string EndLetInJson();
 }

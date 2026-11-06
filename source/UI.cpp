@@ -98,6 +98,13 @@ namespace UI
 			return changed;
 		}
 
+		// One whole unit per nudge (rule 68), with the same press-to-select as the hour sliders.
+		void IntSlider(const char* a_label, int* a_value, int a_min, int a_max, const char* a_helpKey, const char* a_help)
+		{
+			precise::SliderInt(a_label, a_value, a_min, a_max, "%d");
+			HelpMarker(strings::TR(a_helpKey, a_help));
+		}
+
 		void RenderButtons()
 		{
 			ImGuiMCP::SeparatorText("");
@@ -179,9 +186,30 @@ namespace UI
 		HelpMarker(strings::TR("DSK_HelpEnable", "Off: every door behaves as it does without this mod."));
 
 		HourSlider(strings::TR("DSK_DayStart", "Day starts at"), &settings::dayStartHour);
-		HelpMarker(strings::TR("DSK_HelpDayStart", "From this hour they open to anybody. 24-hour clock."));
+		HelpMarker(strings::TR("DSK_HelpDayStart", "From this hour the night penalty stops. 24-hour clock."));
 		HourSlider(strings::TR("DSK_DayEnd", "Night starts at"), &settings::dayEndHour);
-		HelpMarker(strings::TR("DSK_HelpDayEnd", "From this hour only a friend gets in. 24-hour clock."));
+		HelpMarker(strings::TR("DSK_HelpDayEnd", "From this hour the night penalty applies. 24-hour clock."));
+
+		ImGuiMCP::SeparatorText(strings::TR("DSK_Decision", "Who lets you in"));
+		IntSlider(strings::TR("DSK_FriendRank", "Always open to rank"), &settings::friendRank, 1, 4, "DSK_HelpFriendRank",
+			"From this relationship rank a knock is always answered: 1 friend, 2 confidant, 3 ally, 4 lover.");
+		IntSlider(strings::TR("DSK_KnockSpeech", "Speech for a knock"), &settings::knockSpeech, 0, 100, "DSK_HelpKnockSpeech",
+			"The Speech skill a plain knock needs from a stranger, before the penalties.");
+		IntSlider(strings::TR("DSK_PersuadeSpeech", "Speech to persuade"), &settings::persuadeSpeech, 0, 100, "DSK_HelpPersuadeSpeech",
+			"The Speech skill Persuade needs, before the same penalties.");
+		IntSlider(strings::TR("DSK_NightPenalty", "Night penalty"), &settings::nightPenalty, 0, 100, "DSK_HelpNightPenalty", "Added to the Speech needed at night.");
+		IntSlider(strings::TR("DSK_AsleepPenalty", "Woken penalty"), &settings::asleepPenalty, 0, 100, "DSK_HelpAsleepPenalty", "Added to the Speech needed when the one answering was asleep.");
+		IntSlider(strings::TR("DSK_BountyGold", "Bounty that counts"), &settings::bountyGold, 0, 5000, "DSK_HelpBountyGold",
+			"A bounty of this much gold or more in their hold adds the bounty penalty. 0: bounties do not count.");
+		IntSlider(strings::TR("DSK_BountyPenalty", "Bounty penalty"), &settings::bountyPenalty, 0, 100, "DSK_HelpBountyPenalty", "Added to the Speech needed when your bounty counts.");
+		IntSlider(strings::TR("DSK_ThiefGold", "Theft that counts"), &settings::thiefGold, 0, 5000, "DSK_HelpThiefGold",
+			"Seen stealing goods worth this much gold or more in their hold adds the thief penalty. 0: thefts do not count.");
+		IntSlider(strings::TR("DSK_ThiefPenalty", "Thief penalty"), &settings::thiefPenalty, 0, 100, "DSK_HelpThiefPenalty", "Added to the Speech needed when you are a known thief there.");
+		IntSlider(strings::TR("DSK_DislikePenalty", "Dislike penalty"), &settings::dislikePenalty, 0, 100, "DSK_HelpDislikePenalty", "Added for each relationship rank below acquaintance.");
+		IntSlider(strings::TR("DSK_IntimidateMargin", "Intimidate margin"), &settings::intimidateMargin, -50, 50, "DSK_HelpIntimidateMargin",
+			"How far your level, raised by your Speech, must beat their level scaled by their confidence. Negative makes it easier.");
+		IntSlider(strings::TR("DSK_RetryHours", "Hours before a new try"), &settings::retryHours, 0, 72, "DSK_HelpRetryHours",
+			"Game hours after a refusal before a knock starts over, with Persuade and Intimidate offered again.");
 
 		ImGuiMCP::PopItemWidth();
 		ImGuiMCP::Spacing();

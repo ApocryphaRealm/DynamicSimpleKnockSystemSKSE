@@ -19,6 +19,21 @@
 // and colours the name line of a crime door. Its source is public (powerof3/SimpleActivateSKSE). While it is loaded the prompt
 // is one line, "Knock: name", which it neither shortens nor colours; otherwise two lines, as the game writes them.
 //
+// WHO DECIDES (the owner, 2026-11-06: "some kind of dialogue where they have to agree to let me in"). A Knock no longer
+// opens the door by itself. The resident with the best relationship to the player answers (adults before children, the
+// awake before the asleep) and decides (Judge): a friend or better always lets you in; anybody else when the player's
+// Speech reaches iKnockSpeech plus penalties for night, for having been woken, for a bounty in their hold, for being seen
+// stealing there, and for each rank of dislike. Refused, the box offers Persuade (Speech against iPersuadeSpeech plus the
+// same penalties) and Intimidate (the player's level raised by Speech, against theirs scaled by their confidence through
+// the game's fIntimidateConfidenceMult settings), once each per refusal, besides Pick the lock and Leave.
+//
+// THE VOICE, WITHOUT A PLUGIN (the owner, 06:25: "the no esp option"). The answer is spoken from the door with the native
+// ObjectReference.Say(topic, speakAs) through the Papyrus VM: the door speaks, the resident's voice type and conditions
+// choose the line. The two topics are vanilla DialogueGeneric topics, found by script in Skyrim.esm (2026-11-06) and set
+// in [Voice]: let in 039C2A (Trespass Against NPC: "I'll let you stay. This time.", "If you were anyone else, I'd make
+// you leave."), refused 06AEA2 (Time To Go: "You need to leave.", with a line for every voice type). A voice type that
+// topic has no line for says nothing; the on-screen message still says what happened.
+//
 // LETTING IN (BeginLetIn). The door's lock is opened in memory and the destination cell's Public flag set in memory, with no
 // change flag on either form, so the game's save carries nothing of it. One let-in at a time, kept in one co-save record so a
 // save made inside the house still works when loaded. It ends the next time a load finishes with the player in an exterior
@@ -37,13 +52,18 @@
 #include <cctype>
 #include <chrono>
 #include <deque>
+#include <optional>
+#include <thread>
+#include <tuple>
 #include <format>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #include <windows.h>
+#undef GetObject   // windows.h maps it to GetObjectW, hiding BSScript::Variable::GetObject
 
 namespace knock
 {
@@ -99,7 +119,55 @@ namespace knock
 			std::vector<RE::Actor*> residents;   // in the cell now, living and enabled
 		};
 
-		enum class Answer { kLetIn, kNobody, kTooLate };
+		enum class Act : std::uint8_t { kKnock, kPersuade, kIntimidate, kPick, kLeave };
+
+		// What the decision weighs, read from the game (or set through DevBench, see Overrides).
+		struct Inputs
+		{
+			RE::Actor* speaker{ nullptr };
+			int speech{ 0 };            // the player's Speech skill
+			int playerLevel{ 1 };
+			int theirLevel{ 1 };
+			int rank{ 0 };              // relationship rank to the player: 4 lover .. 0 acquaintance .. -4 archnemesis
+			int confidence{ 2 };        // their Confidence: 0 cowardly .. 4 foolhardy
+			float confidenceMult{ 1.0F };
+			bool night{ false };
+			bool asleep{ false };
+			bool child{ false };
+			std::uint32_t bounty{ 0 };  // the player's crime gold with their crime faction
+			std::uint32_t stolen{ 0 };  // goods seen stolen from that faction, by value
+			RE::FormID crimeFaction{ 0 };
+		};
+
+		struct Verdicts
+		{
+			int penalty{ 0 };
+			int knockNeed{ 0 };
+			int persuadeNeed{ 0 };
+			float yourIntimidation{ 0.0F };
+			float theirIntimidation{ 0.0F };
+			bool friendly{ false };
+			bool knock{ false };
+			bool persuade{ false };
+			bool intimidate{ false };
+		};
+
+		// DevBench op=set: values that replace what the game says, until op=clear or the next game load.
+		struct Overrides
+		{
+			std::optional<int> speech, rank, playerLevel, theirLevel, confidence, bounty, stolen;
+			std::optional<bool> night, asleep;
+		};
+
+		// The last refusal: Persuade and Intimidate are offered for this door until both are used or iRetryHours pass.
+		struct Refusal
+		{
+			RE::FormID door{ 0 };
+			RE::FormID speaker{ 0 };
+			float at{ 0.0F };           // game days
+			bool triedPersuade{ false };
+			bool triedIntimidate{ false };
+		};
 
 		struct LetIn
 		{
@@ -120,12 +188,18 @@ namespace knock
 
 		RE::FormID g_promptDoor = 0;    // the door last shown as Knock
 		RE::FormID g_choiceDoor = 0;    // the door the choice box is open for
-		bool g_choiceCanPick = false;
+		std::vector<Act> g_buttons;     // what each button of the open box does
 		RE::FormID g_passDoor = 0;      // the next Activate on this door goes to the game untouched
 		bool g_simpleActivate = false;
 		LetIn g_letIn;
+		Refusal g_refusal;
+		Overrides g_over;
+		RE::TESTopic* g_letInTopic = nullptr;
+		RE::TESTopic* g_refuseTopic = nullptr;
+		std::string g_lastDecision = "null";   // JSON of the last Judge that acted
 
-		std::uint32_t g_knocks = 0, g_letIns = 0, g_nobody = 0, g_tooLate = 0, g_promptsShown = 0;
+		std::uint32_t g_knocks = 0, g_letIns = 0, g_nobody = 0, g_refused = 0, g_promptsShown = 0;
+		std::uint32_t g_persuaded = 0, g_notPersuaded = 0, g_intimidated = 0, g_notIntimidated = 0, g_says = 0, g_sayFailed = 0;
 		std::deque<std::string> g_events;
 
 		std::string Lower(std::string a_s)
@@ -335,31 +409,199 @@ namespace knock
 			return start <= end ? (hour >= start && hour < end) : (hour >= start || hour < end);
 		}
 
-		// A friend: relationship rank above acquaintance, as the game holds it. The rank levels run Lover (0) .. Friend (3),
-		// Acquaintance (4) .. Archnemesis (8), so "above acquaintance" is a smaller number.
-		bool IsFriend(RE::TESNPC* a_npc)
+		// Relationship rank to the player, as the game holds it: the levels run Lover (0) .. Friend (3), Acquaintance (4) ..
+		// Archnemesis (8), so rank = 4 - level (4 lover, 1 friend, 0 acquaintance, -4 archnemesis). No record: 0.
+		int RankOf(RE::TESNPC* a_npc)
 		{
 			auto* player = RE::PlayerCharacter::GetSingleton();
 			auto* playerBase = player ? player->GetActorBase() : nullptr;
-			if (!a_npc || !playerBase) { return false; }
+			if (!a_npc || !playerBase) { return 0; }
 			const auto* relationship = RE::BGSRelationship::GetRelationship(a_npc, playerBase);
-			return relationship && relationship->level.underlying() < static_cast<std::underlying_type_t<RE::BGSRelationship::RELATIONSHIP_LEVEL>>(RE::BGSRelationship::RELATIONSHIP_LEVEL::kAcquaintance);
+			if (!relationship) { return 0; }
+			return 4 - static_cast<int>(relationship->level.underlying());
 		}
 
-		bool FriendInside(const Home& a_home)
+		bool IsFriend(RE::TESNPC* a_npc) { return RankOf(a_npc) >= 1; }
+
+		bool IsAsleep(RE::Actor* a_actor)
 		{
+			if (!a_actor) { return false; }
+			if (auto* state = a_actor->AsActorState())
+			{
+				const auto sleep = state->GetSitSleepState();
+				if (sleep == RE::SIT_SLEEP_STATE::kWantToSleep || sleep == RE::SIT_SLEEP_STATE::kWaitingForSleepAnim || sleep == RE::SIT_SLEEP_STATE::kIsSleeping) { return true; }
+			}
+			const auto* package = a_actor->GetCurrentPackage();
+			return package && static_cast<std::uint32_t>(package->packData.packType.get()) == static_cast<std::uint32_t>(RE::PACKAGE_PROCEDURE_TYPE::kSleep);
+		}
+
+		// Who answers: the best relationship first, then adults before children, then the awake before the asleep.
+		RE::Actor* ChooseSpeaker(const Home& a_home)
+		{
+			RE::Actor* best = nullptr;
+			std::tuple<int, int, int> bestKey{ -100, 0, 0 };
 			for (auto* actor : a_home.residents)
 			{
-				if (IsFriend(actor->GetActorBase())) { return true; }
+				if (!actor) { continue; }
+				const std::tuple<int, int, int> key{ RankOf(actor->GetActorBase()), actor->IsChild() ? 0 : 1, IsAsleep(actor) ? 0 : 1 };
+				if (!best || key > bestKey)
+				{
+					best = actor;
+					bestKey = key;
+				}
 			}
-			return false;
+			return best;
 		}
 
-		Answer Decide(const Home& a_home)
+		float GameSetting(const char* a_name, float a_fallback)
 		{
-			if (a_home.residents.empty()) { return Answer::kNobody; }
-			if (IsDay() || FriendInside(a_home)) { return Answer::kLetIn; }
-			return Answer::kTooLate;
+			auto* collection = RE::GameSettingCollection::GetSingleton();
+			auto* setting = collection ? collection->GetSetting(a_name) : nullptr;
+			if (!setting)
+			{
+				logger::warn("game setting {} not found; using {}", a_name, a_fallback);
+				return a_fallback;
+			}
+			return setting->GetFloat();
+		}
+
+		// The vanilla intimidation idea: the target's confidence scales how hard they are to scare.
+		float ConfidenceMult(int a_confidence)
+		{
+			switch (std::clamp(a_confidence, 0, 4))
+			{
+			case 0: return GameSetting("fIntimidateConfidenceMultCowardly", 1.0F);
+			case 1: return GameSetting("fIntimidateConfidenceMultCautious", 1.0F);
+			case 3: return GameSetting("fIntimidateConfidenceMultBrave", 1.0F);
+			case 4: return GameSetting("fIntimidateConfidenceMultFoolhardy", 1.0F);
+			default: return GameSetting("fIntimidateConfidenceMultAverage", 1.0F);
+			}
+		}
+
+		Inputs Gather(const Home& a_home)
+		{
+			Inputs in;
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			in.speaker = ChooseSpeaker(a_home);
+			if (!player || !in.speaker) { return in; }
+
+			auto* playerAV = player->AsActorValueOwner();
+			auto* theirAV = in.speaker->AsActorValueOwner();
+			in.speech = playerAV ? static_cast<int>(playerAV->GetActorValue(RE::ActorValue::kSpeech)) : 0;
+			in.playerLevel = player->GetLevel();
+			in.theirLevel = in.speaker->GetLevel();
+			in.confidence = theirAV ? static_cast<int>(theirAV->GetActorValue(RE::ActorValue::kConfidence)) : 2;
+			in.rank = RankOf(in.speaker->GetActorBase());
+			in.night = !IsDay();
+			in.asleep = IsAsleep(in.speaker);
+			in.child = in.speaker->IsChild();
+
+			if (const auto* faction = in.speaker->GetCrimeFaction())
+			{
+				in.crimeFaction = faction->GetFormID();
+				in.bounty = player->GetCrimeGoldValue(faction);
+				const auto& stolen = player->GetCrimeValue().stolenItemValueMap;
+				if (const auto it = stolen.find(faction); it != stolen.end()) { in.stolen = static_cast<std::uint32_t>(std::max(0, it->second.witnessed)); }
+			}
+
+			if (g_over.speech) { in.speech = *g_over.speech; }
+			if (g_over.rank) { in.rank = *g_over.rank; }
+			if (g_over.playerLevel) { in.playerLevel = *g_over.playerLevel; }
+			if (g_over.theirLevel) { in.theirLevel = *g_over.theirLevel; }
+			if (g_over.confidence) { in.confidence = *g_over.confidence; }
+			if (g_over.bounty) { in.bounty = static_cast<std::uint32_t>(std::max(0, *g_over.bounty)); }
+			if (g_over.stolen) { in.stolen = static_cast<std::uint32_t>(std::max(0, *g_over.stolen)); }
+			if (g_over.night) { in.night = *g_over.night; }
+			if (g_over.asleep) { in.asleep = *g_over.asleep; }
+			in.confidenceMult = ConfidenceMult(in.confidence);
+			return in;
+		}
+
+		Verdicts Judge(const Inputs& a_in)
+		{
+			Verdicts v;
+			v.penalty = (a_in.night ? settings::nightPenalty : 0) + (a_in.asleep ? settings::asleepPenalty : 0) +
+			            (settings::bountyGold > 0 && a_in.bounty >= static_cast<std::uint32_t>(settings::bountyGold) ? settings::bountyPenalty : 0) +
+			            (settings::thiefGold > 0 && a_in.stolen >= static_cast<std::uint32_t>(settings::thiefGold) ? settings::thiefPenalty : 0) +
+			            std::max(0, -a_in.rank) * settings::dislikePenalty;
+			v.knockNeed = settings::knockSpeech + v.penalty;
+			v.persuadeNeed = settings::persuadeSpeech + v.penalty;
+			v.friendly = a_in.rank >= settings::friendRank;
+			v.knock = v.friendly || a_in.speech >= v.knockNeed;
+			v.persuade = a_in.speech >= v.persuadeNeed;
+			v.yourIntimidation = static_cast<float>(a_in.playerLevel) * (1.0F + static_cast<float>(a_in.speech) / 100.0F);
+			v.theirIntimidation = static_cast<float>(a_in.theirLevel) * a_in.confidenceMult;
+			v.intimidate = v.yourIntimidation >= v.theirIntimidation + static_cast<float>(settings::intimidateMargin);
+			return v;
+		}
+
+		std::string DecisionJson(const char* a_what, const Inputs& a_in, const Verdicts& a_v)
+		{
+			return std::format(
+				"{{\"what\":\"{}\",\"speaker\":\"{:08X}\",\"name\":\"{}\",\"inputs\":{{\"speech\":{},\"playerLevel\":{},\"theirLevel\":{},\"rank\":{},\"confidence\":{},\"confidenceMult\":{:.2f},"
+				"\"night\":{},\"asleep\":{},\"child\":{},\"bounty\":{},\"stolen\":{},\"crimeFaction\":\"{:08X}\"}},"
+				"\"result\":{{\"penalty\":{},\"knockNeed\":{},\"persuadeNeed\":{},\"yourIntimidation\":{:.1f},\"theirIntimidation\":{:.1f},\"friendly\":{},\"knock\":{},\"persuade\":{},\"intimidate\":{}}}}}",
+				a_what, a_in.speaker ? a_in.speaker->GetFormID() : 0, a_in.speaker ? Escape(a_in.speaker->GetDisplayFullName()) : "",
+				a_in.speech, a_in.playerLevel, a_in.theirLevel, a_in.rank, a_in.confidence, a_in.confidenceMult,
+				a_in.night, a_in.asleep, a_in.child, a_in.bounty, a_in.stolen, a_in.crimeFaction,
+				a_v.penalty, a_v.knockNeed, a_v.persuadeNeed, a_v.yourIntimidation, a_v.theirIntimidation, a_v.friendly, a_v.knock, a_v.persuade, a_v.intimidate);
+		}
+
+		std::string WithName(const char* a_text, RE::Actor* a_actor)
+		{
+			std::string out = a_text ? a_text : "";
+			const char* name = a_actor ? a_actor->GetDisplayFullName() : nullptr;
+			const std::string who = name && name[0] ? name : "?";
+			for (auto at = out.find("{name}"); at != std::string::npos; at = out.find("{name}", at + who.size())) { out.replace(at, 6, who); }
+			return out;
+		}
+
+		// Papyrus calls back here when Say has run; the result is None either way, so this only logs.
+		class SayDone : public RE::BSScript::IStackCallbackFunctor
+		{
+		public:
+			explicit SayDone(std::string a_what) : what(std::move(a_what)) {}
+			void operator()(RE::BSScript::Variable) override { logger::debug("Say ({}) ran", what); }
+			void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
+
+		private:
+			std::string what;
+		};
+
+		// The native ObjectReference.Say(topic, speakAs, false) on the door: the line is played at the door, spoken as the
+		// resident, in their voice. Packing the door binds it a base ObjectReference object, as the VM does for any form it
+		// is handed.
+		bool SayAs(RE::TESObjectREFR* a_door, RE::TESTopic* a_topic, RE::Actor* a_speaker, const char* a_what)
+		{
+			if (!a_door || !a_topic || !a_speaker)
+			{
+				++g_sayFailed;
+				logger::warn("Say ({}) skipped: door {}, topic {}, speaker {}", a_what, a_door != nullptr, a_topic != nullptr, a_speaker != nullptr);
+				return false;
+			}
+			auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+			if (!vm)
+			{
+				++g_sayFailed;
+				logger::warn("Say ({}) skipped: the Papyrus VM is not ready", a_what);
+				return false;
+			}
+			RE::BSScript::Variable self;
+			self.Pack(a_door);
+			auto object = self.GetObject();
+			if (!object)
+			{
+				++g_sayFailed;
+				logger::warn("Say ({}) skipped: door {:08X} has no script object", a_what, a_door->GetFormID());
+				return false;
+			}
+			auto* args = RE::MakeFunctionArguments(static_cast<RE::TESTopic*>(a_topic), static_cast<RE::Actor*>(a_speaker), false);
+			RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{ new SayDone(a_what) };
+			const bool sent = vm->DispatchMethodCall(object, RE::BSFixedString("Say"), args, callback);
+			if (sent) { ++g_says; }
+			else { ++g_sayFailed; }
+			logger::info("Say ({}): topic {:08X} at door {:08X} as {:08X} {}", a_what, a_topic->GetFormID(), a_door->GetFormID(), a_speaker->GetFormID(), sent ? "sent" : "REFUSED by the VM");
+			return sent;
 		}
 
 		void ApplyLetIn()
@@ -390,34 +632,191 @@ namespace knock
 			ApplyLetIn();
 		}
 
-		// The whole of a knock. True when the door was let open and the game's own Activate should now run.
-		bool DoKnock(RE::TESObjectREFR* a_door, const Home& a_home)
+		float Now()
 		{
-			++g_knocks;
-			const char* day = IsDay() ? "day" : "night";
-			switch (Decide(a_home))
-			{
-			case Answer::kLetIn:
-				++g_letIns;
-				BeginLetIn(a_door, a_home);
-				Notify(strings::TR("DSK_ComeIn", "Come in."));
-				Event(std::format("knock on {:08X} ({}): let in, {} resident(s)", a_door->GetFormID(), day, a_home.residents.size()));
-				return true;
-			case Answer::kNobody:
-				++g_nobody;
-				Notify(strings::TR("DSK_NoAnswer", "Nobody answers."));
-				Event(std::format("knock on {:08X} ({}): nobody in cell {:08X} now", a_door->GetFormID(), day, a_home.cell->GetFormID()));
-				break;
-			case Answer::kTooLate:
-				++g_tooLate;
-				Notify(strings::TR("DSK_TooLate", "It's late. Come back in the morning."));
-				Event(std::format("knock on {:08X} ({}): refused, not a friend", a_door->GetFormID(), day));
-				break;
-			}
-			return false;
+			auto* calendar = RE::Calendar::GetSingleton();
+			return calendar ? calendar->GetCurrentGameTime() : 0.0F;
 		}
 
-		// Runs the game's own Activate on the door, past our hook: the door opens if it is open, and the game's lock path runs if not.
+		bool RefusalActive(RE::FormID a_door)
+		{
+			return g_refusal.door && g_refusal.door == a_door && (Now() - g_refusal.at) * 24.0F < static_cast<float>(settings::retryHours);
+		}
+
+		bool CanPick(RE::TESObjectREFR* a_door) { return a_door && a_door->GetLockLevel() != RE::LOCK_LEVEL::kRequiresKey; }
+
+		const char* Label(Act a_act)
+		{
+			switch (a_act)
+			{
+			case Act::kKnock: return strings::TR("DSK_Knock", "Knock");
+			case Act::kPersuade: return strings::TR("DSK_ChoicePersuade", "Persuade");
+			case Act::kIntimidate: return strings::TR("DSK_ChoiceIntimidate", "Intimidate");
+			case Act::kPick: return strings::TR("DSK_ChoicePick", "Pick the lock");
+			case Act::kLeave: return strings::TR("DSK_ChoiceLeave", "Leave");
+			}
+			return "?";
+		}
+
+		const char* ActName(Act a_act)
+		{
+			switch (a_act)
+			{
+			case Act::kKnock: return "knock";
+			case Act::kPersuade: return "persuade";
+			case Act::kIntimidate: return "intimidate";
+			case Act::kPick: return "pick";
+			case Act::kLeave: return "leave";
+			}
+			return "?";
+		}
+
+		void OnChoice(std::uint8_t a_button);
+
+		bool ShowBox(RE::TESObjectREFR* a_door, const std::string& a_body, std::vector<Act> a_acts)
+		{
+			// Signature from CommonLibSSE-NG 7.2's MessageBoxMenu::Create, the same function on every runtime: it reads
+			// the buttons up to a nullptr and hands the callback the button's index plus the offset.
+			using func_t = bool(const char*, void (*)(std::uint8_t), std::uint8_t, std::int32_t, std::int32_t, ...);
+			static REL::Relocation<func_t> create{ RELOCATION_ID(51420, 52269) };
+
+			std::array<const char*, 4> labels{ nullptr, nullptr, nullptr, nullptr };
+			for (std::size_t i = 0; i < a_acts.size() && i < labels.size(); ++i) { labels[i] = Label(a_acts[i]); }
+			if (a_acts.size() > labels.size()) { a_acts.resize(labels.size()); }
+			g_choiceDoor = a_door->GetFormID();
+			g_buttons = std::move(a_acts);
+			const bool shown = create(a_body.c_str(), OnChoice, std::uint8_t{ 0 }, 0, 10, labels[0], labels[1], labels[2], labels[3], nullptr);
+			if (!shown)
+			{
+				g_choiceDoor = 0;
+				g_buttons.clear();
+				logger::warn("the choice box for {:08X} did not open", a_door->GetFormID());
+			}
+			return shown;
+		}
+
+		std::string Place(RE::TESObjectREFR* a_door, const Home& a_home)
+		{
+			const char* place = a_home.cell ? a_home.cell->GetFullName() : nullptr;
+			if (!place || !place[0]) { place = a_door->GetDisplayFullName(); }
+			return place ? place : "";
+		}
+
+		// The first box: Knock, Pick the lock (not for a key-only lock), Leave.
+		bool ShowChoice(RE::TESObjectREFR* a_door, const Home& a_home)
+		{
+			std::vector<Act> acts{ Act::kKnock };
+			if (CanPick(a_door)) { acts.push_back(Act::kPick); }
+			acts.push_back(Act::kLeave);
+			return ShowBox(a_door, std::format("{}\n{}", Place(a_door, a_home), strings::TR("DSK_ChoiceBody", "The door is locked.")), std::move(acts));
+		}
+
+		// After a refusal: what is left of Persuade and Intimidate, then Pick the lock and Leave.
+		bool ShowRefusalBox(RE::TESObjectREFR* a_door, const Home& a_home)
+		{
+			std::vector<Act> acts;
+			if (!g_refusal.triedPersuade) { acts.push_back(Act::kPersuade); }
+			if (!g_refusal.triedIntimidate) { acts.push_back(Act::kIntimidate); }
+			if (CanPick(a_door)) { acts.push_back(Act::kPick); }
+			acts.push_back(Act::kLeave);
+			auto* speaker = RE::TESForm::LookupByID<RE::Actor>(g_refusal.speaker);
+			return ShowBox(a_door, std::format("{}\n{}", Place(a_door, a_home), WithName(strings::TR("DSK_RefusedBody", "{name} won't open the door."), speaker)), std::move(acts));
+		}
+
+		// A refusal's box comes up by itself once the spoken line has had time to play (the box would pause it). The next
+		// press on the door shows it too, so walking away loses nothing.
+		void ScheduleRefusalBox(RE::FormID a_door)
+		{
+			if (g_refusal.triedPersuade && g_refusal.triedIntimidate) { return; }
+			std::thread([a_door]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+				auto* tasks = SKSE::GetTaskInterface();
+				if (!tasks) { return; }
+				tasks->AddTask([a_door]() {
+					if (!RefusalActive(a_door) || g_choiceDoor) { return; }
+					auto* ui = RE::UI::GetSingleton();
+					if (!ui || ui->GameIsPaused() || ui->IsMenuOpen(RE::MessageBoxMenu::MENU_NAME) || ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME)) { return; }
+					auto* player = RE::PlayerCharacter::GetSingleton();
+					auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(a_door);
+					if (!player || !door || player->GetParentCell() != door->GetParentCell() || player->GetPosition().GetDistance(door->GetPosition()) > 400.0F) { return; }
+					Home home;
+					if (Classify(door, home) == Verdict::kHome) { ShowRefusalBox(door, home); }
+				});
+			}).detach();
+		}
+
+		void LetInNow(RE::TESObjectREFR* a_door, const Home& a_home, const Inputs& a_in, const char* a_key, const char* a_english, const char* a_how)
+		{
+			++g_letIns;
+			BeginLetIn(a_door, a_home);
+			g_refusal = {};
+			SayAs(a_door, g_letInTopic, a_in.speaker, a_how);
+			Notify(WithName(strings::TR(a_key, a_english), a_in.speaker).c_str());
+			Event(std::format("{} on {:08X}: let in by {:08X} (speech {}, rank {}, {}{})", a_how, a_door->GetFormID(), a_in.speaker->GetFormID(), a_in.speech, a_in.rank,
+				a_in.night ? "night" : "day", a_in.asleep ? ", woken" : ""));
+			Dirty();   // the door's own prompt now: it is unlocked, and the next press opens it
+		}
+
+		void RefuseNow(RE::TESObjectREFR* a_door, const Inputs& a_in, const char* a_key, const char* a_english, const char* a_how)
+		{
+			SayAs(a_door, g_refuseTopic, a_in.speaker, a_how);
+			Notify(WithName(strings::TR(a_key, a_english), a_in.speaker).c_str());
+			Event(std::format("{} on {:08X}: refused by {:08X} (speech {}, rank {}, {}{}, bounty {}, stolen {})", a_how, a_door->GetFormID(), a_in.speaker->GetFormID(), a_in.speech, a_in.rank,
+				a_in.night ? "night" : "day", a_in.asleep ? ", woken" : "", a_in.bounty, a_in.stolen));
+			ScheduleRefusalBox(a_door->GetFormID());
+		}
+
+		// Knock, Persuade or Intimidate on a door the rule has called a home. Nothing here opens the door by itself: a let-in
+		// unlocks it and the player's next press goes through it.
+		void Attempt(RE::TESObjectREFR* a_door, const Home& a_home, Act a_act)
+		{
+			const auto in = Gather(a_home);
+			if (!in.speaker)
+			{
+				++g_nobody;
+				Notify(strings::TR("DSK_NoAnswer", "Nobody answers."));
+				Event(std::format("{} on {:08X}: nobody in cell {:08X} now", ActName(a_act), a_door->GetFormID(), a_home.cell->GetFormID()));
+				return;
+			}
+			const auto v = Judge(in);
+			g_lastDecision = DecisionJson(ActName(a_act), in, v);
+			logger::info("decision: {}", g_lastDecision);
+
+			if (a_act == Act::kKnock)
+			{
+				++g_knocks;
+				if (v.knock)
+				{
+					if (in.asleep) { LetInNow(a_door, a_home, in, "DSK_MsgWokeLetIn", "You woke {name}, who unlocks the door.", v.friendly ? "knock, friend" : "knock"); }
+					else { LetInNow(a_door, a_home, in, "DSK_MsgLetIn", "{name} unlocks the door.", v.friendly ? "knock, friend" : "knock"); }
+					return;
+				}
+				++g_refused;
+				if (!RefusalActive(a_door->GetFormID())) { g_refusal = {}; }
+				g_refusal.door = a_door->GetFormID();
+				g_refusal.speaker = in.speaker->GetFormID();
+				g_refusal.at = Now();
+				if (in.asleep) { RefuseNow(a_door, in, "DSK_MsgWokeRefused", "You woke {name}, who won't let you in.", "knock"); }
+				else { RefuseNow(a_door, in, "DSK_MsgRefused", "{name} won't let you in.", "knock"); }
+				return;
+			}
+
+			const bool persuade = a_act == Act::kPersuade;
+			if (persuade) { g_refusal.triedPersuade = true; }
+			else { g_refusal.triedIntimidate = true; }
+			g_refusal.door = a_door->GetFormID();
+			g_refusal.speaker = in.speaker->GetFormID();
+			if (persuade ? v.persuade : v.intimidate)
+			{
+				if (persuade) { ++g_persuaded; LetInNow(a_door, a_home, in, "DSK_MsgPersuaded", "{name} is persuaded and unlocks the door.", "persuade"); }
+				else { ++g_intimidated; LetInNow(a_door, a_home, in, "DSK_MsgIntimidated", "{name} backs down and unlocks the door.", "intimidate"); }
+				return;
+			}
+			if (persuade) { ++g_notPersuaded; RefuseNow(a_door, in, "DSK_MsgNotPersuaded", "{name} is not persuaded.", "persuade"); }
+			else { ++g_notIntimidated; RefuseNow(a_door, in, "DSK_MsgNotIntimidated", "{name} is not afraid of you.", "intimidate"); }
+		}
+
+		// Runs the game's own Activate on the door, past our hook: the game's lock path runs.
 		void PassToGame(RE::TESObjectREFR* a_door)
 		{
 			auto* player = RE::PlayerCharacter::GetSingleton();
@@ -427,62 +826,39 @@ namespace knock
 			g_passDoor = 0;
 		}
 
+		void Run(RE::FormID a_id, Act a_act)
+		{
+			auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(a_id);
+			if (!door) { return; }
+			if (a_act == Act::kLeave) { return; }
+			if (a_act == Act::kPick)
+			{
+				Event(std::format("player chose to pick {:08X}", a_id));
+				PassToGame(door);
+				return;
+			}
+			g_tableBuilt = false;   // who is in memory at this moment
+			Home home;
+			const auto verdict = Classify(door, home);
+			if (verdict != Verdict::kHome)
+			{
+				Event(std::format("{} on {:08X} dropped: {}", ActName(a_act), a_id, Name(verdict)));
+				return;
+			}
+			Attempt(door, home, a_act);
+		}
+
 		void OnChoice(std::uint8_t a_button)
 		{
 			const RE::FormID id = g_choiceDoor;
-			const bool canPick = g_choiceCanPick;
+			const auto buttons = g_buttons;
 			g_choiceDoor = 0;
+			g_buttons.clear();
 			auto* tasks = SKSE::GetTaskInterface();
-			if (!id || !tasks) { return; }
+			if (!id || !tasks || a_button >= buttons.size()) { return; }
+			const Act act = buttons[a_button];
 			// After the box has closed, on the main thread.
-			tasks->AddTask([id, canPick, a_button]() {
-				auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(id);
-				if (!door) { return; }
-				if (a_button == 0)
-				{
-					g_tableBuilt = false;   // who is in memory at this moment
-					Home home;
-					const auto verdict = Classify(door, home);
-					if (verdict != Verdict::kHome)
-					{
-						Event(std::format("knock on {:08X} dropped: {}", id, Name(verdict)));
-						return;
-					}
-					if (DoKnock(door, home)) { PassToGame(door); }
-				}
-				else if (a_button == 1 && canPick)
-				{
-					Event(std::format("player chose to pick {:08X}", id));
-					PassToGame(door);
-				}
-			});
-		}
-
-		bool ShowChoice(RE::TESObjectREFR* a_door, const Home& a_home)
-		{
-			// Signature from CommonLibSSE-NG 7.2's MessageBoxMenu::Create, the same function on every runtime: it reads
-			// the buttons up to a nullptr and hands the callback the button's index plus the offset.
-			using func_t = bool(const char*, void (*)(std::uint8_t), std::uint8_t, std::int32_t, std::int32_t, ...);
-			static REL::Relocation<func_t> create{ RELOCATION_ID(51420, 52269) };
-
-			const char* place = a_home.cell ? a_home.cell->GetFullName() : nullptr;
-			if (!place || !place[0]) { place = a_door->GetDisplayFullName(); }
-			const std::string body = std::format("{}\n{}", place ? place : "", strings::TR("DSK_ChoiceBody", "The door is locked."));
-
-			g_choiceDoor = a_door->GetFormID();
-			g_choiceCanPick = a_door->GetLockLevel() != RE::LOCK_LEVEL::kRequiresKey;
-			const char* knockText = strings::TR("DSK_Knock", "Knock");
-			const char* pickText = strings::TR("DSK_ChoicePick", "Pick the lock");
-			const char* leaveText = strings::TR("DSK_ChoiceLeave", "Leave");
-			// A key-only lock cannot be picked, so it has no such button; Leave then sits where a press does nothing.
-			const bool shown = g_choiceCanPick ? create(body.c_str(), OnChoice, std::uint8_t{ 0 }, 0, 10, knockText, pickText, leaveText, nullptr) :
-			                                     create(body.c_str(), OnChoice, std::uint8_t{ 0 }, 0, 10, knockText, leaveText, nullptr);
-			if (!shown)
-			{
-				g_choiceDoor = 0;
-				logger::warn("the choice box for {:08X} did not open", a_door->GetFormID());
-			}
-			return shown;
+			tasks->AddTask([id, act]() { Run(id, act); });
 		}
 
 		struct DoorHooks
@@ -517,7 +893,8 @@ namespace knock
 				if (a_target && a_activator && a_activator->IsPlayerRef() && a_target->GetFormID() != g_passDoor && a_target->GetFormID() == g_promptDoor)
 				{
 					Home home;
-					if (Classify(a_target, home) == Verdict::kHome && ShowChoice(a_target, home))
+					if (Classify(a_target, home) == Verdict::kHome &&
+						(RefusalActive(a_target->GetFormID()) ? ShowRefusalBox(a_target, home) : ShowChoice(a_target, home)))
 					{
 						return true;
 					}
@@ -595,6 +972,29 @@ namespace knock
 			}
 		}
 		logger::info("exclusions: {} forms, {} editor IDs, {} not in this load order", g_excludedIDs.size(), g_excludedEditorIDs.size(), g_excludedUnresolved);
+
+		// The two voiced topics, "Plugin|0xID".
+		const auto topic = [dh](const std::string& a_entry, const char* a_what) -> RE::TESTopic* {
+			const auto bar = a_entry.find('|');
+			if (!dh || bar == std::string::npos)
+			{
+				logger::warn("[Voice] {} \"{}\" is not Plugin|0xID; that line is not spoken", a_what, a_entry);
+				return nullptr;
+			}
+			RE::FormID id = 0;
+			try { id = static_cast<RE::FormID>(std::stoul(a_entry.substr(bar + 1), nullptr, 16)); }
+			catch (...)
+			{
+				logger::warn("[Voice] {} \"{}\": the form ID is not a number", a_what, a_entry);
+				return nullptr;
+			}
+			auto* form = dh->LookupForm<RE::TESTopic>(id & 0x00FFFFFF, a_entry.substr(0, bar));
+			if (!form) { logger::warn("[Voice] {} \"{}\" is not a dialogue topic in this load order; that line is not spoken", a_what, a_entry); }
+			else { logger::info("[Voice] {}: topic {:08X}", a_what, form->GetFormID()); }
+			return form;
+		};
+		g_letInTopic = topic(settings::letInTopic, "let in");
+		g_refuseTopic = topic(settings::refuseTopic, "refuse");
 	}
 
 	void OnGameLoaded()
@@ -602,7 +1002,10 @@ namespace knock
 		g_tableBuilt = false;
 		g_promptDoor = 0;
 		g_choiceDoor = 0;
+		g_buttons.clear();
 		g_passDoor = 0;
+		g_refusal = {};
+		g_over = {};
 	}
 
 	void RefreshPrompt()
@@ -649,17 +1052,28 @@ namespace knock
 		auto* calendar = RE::Calendar::GetSingleton();
 		std::string events;
 		for (const auto& e : g_events) { events += (events.empty() ? "\"" : ",\"") + Escape(e) + "\""; }
+		const auto opt = [](const auto& a_v) { return a_v ? std::to_string(static_cast<int>(*a_v)) : std::string("null"); };
+		const std::string overrides = std::format("{{\"speech\":{},\"rank\":{},\"playerLevel\":{},\"theirLevel\":{},\"confidence\":{},\"bounty\":{},\"stolen\":{},\"night\":{},\"asleep\":{}}}",
+			opt(g_over.speech), opt(g_over.rank), opt(g_over.playerLevel), opt(g_over.theirLevel), opt(g_over.confidence), opt(g_over.bounty), opt(g_over.stolen), opt(g_over.night), opt(g_over.asleep));
+		const std::string decision = std::format("{{\"friendRank\":{},\"knockSpeech\":{},\"persuadeSpeech\":{},\"nightPenalty\":{},\"asleepPenalty\":{},\"bountyGold\":{},\"bountyPenalty\":{},"
+			"\"thiefGold\":{},\"thiefPenalty\":{},\"dislikePenalty\":{},\"intimidateMargin\":{},\"retryHours\":{}}}",
+			settings::friendRank, settings::knockSpeech, settings::persuadeSpeech, settings::nightPenalty, settings::asleepPenalty, settings::bountyGold, settings::bountyPenalty,
+			settings::thiefGold, settings::thiefPenalty, settings::dislikePenalty, settings::intimidateMargin, settings::retryHours);
 		return std::format(
-			"{{\"ok\":true,\"enabled\":{},\"dayStart\":{},\"dayEnd\":{},\"hour\":{:.2f},\"isDay\":{},\"simpleActivate\":{},\"promptDoor\":\"{:08X}\",\"choiceDoor\":\"{:08X}\","
+			"{{\"ok\":true,\"enabled\":{},\"dayStart\":{},\"dayEnd\":{},\"hour\":{:.2f},\"isDay\":{},\"simpleActivate\":{},\"promptDoor\":\"{:08X}\",\"choiceDoor\":\"{:08X}\",\"buttons\":{},"
 			"\"letIn\":{{\"door\":\"{:08X}\",\"cell\":\"{:08X}\",\"cellWasPublic\":{}}},"
+			"\"refusal\":{{\"door\":\"{:08X}\",\"speaker\":\"{:08X}\",\"active\":{},\"triedPersuade\":{},\"triedIntimidate\":{}}},"
+			"\"topics\":{{\"letIn\":\"{:08X}\",\"refuse\":\"{:08X}\"}},\"settings\":{},\"overrides\":{},\"lastDecision\":{},"
 			"\"table\":{{\"built\":{},\"actors\":{},\"ms\":{}}},"
 			"\"exclusions\":{{\"forms\":{},\"editorIDs\":{},\"unresolved\":{}}},"
-			"\"counts\":{{\"prompts\":{},\"knocks\":{},\"letIn\":{},\"nobody\":{},\"tooLate\":{}}},\"events\":[{}]}}",
-			settings::enabled, settings::dayStartHour, settings::dayEndHour, calendar ? calendar->GetHour() : -1.0F, IsDay(), g_simpleActivate, g_promptDoor, g_choiceDoor,
+			"\"counts\":{{\"prompts\":{},\"knocks\":{},\"letIn\":{},\"nobody\":{},\"refused\":{},\"persuaded\":{},\"notPersuaded\":{},\"intimidated\":{},\"notIntimidated\":{},\"says\":{},\"sayFailed\":{}}},\"events\":[{}]}}",
+			settings::enabled, settings::dayStartHour, settings::dayEndHour, calendar ? calendar->GetHour() : -1.0F, IsDay(), g_simpleActivate, g_promptDoor, g_choiceDoor, g_buttons.size(),
 			g_letIn.door, g_letIn.cell, g_letIn.cellWasPublic,
+			g_refusal.door, g_refusal.speaker, RefusalActive(g_refusal.door), g_refusal.triedPersuade, g_refusal.triedIntimidate,
+			g_letInTopic ? g_letInTopic->GetFormID() : 0, g_refuseTopic ? g_refuseTopic->GetFormID() : 0, decision, overrides, g_lastDecision,
 			g_tableBuilt, g_tableActors, g_tableMs,
 			g_excludedIDs.size(), g_excludedEditorIDs.size(), g_excludedUnresolved,
-			g_promptsShown, g_knocks, g_letIns, g_nobody, g_tooLate, events);
+			g_promptsShown, g_knocks, g_letIns, g_nobody, g_refused, g_persuaded, g_notPersuaded, g_intimidated, g_notIntimidated, g_says, g_sayFailed, events);
 	}
 
 	std::string CheckJson(std::uint32_t a_refID)
@@ -672,7 +1086,8 @@ namespace knock
 		std::string residents;
 		for (auto* actor : home.residents)
 		{
-			residents += std::format("{}{{\"id\":\"{:08X}\",\"name\":\"{}\",\"friend\":{}}}", residents.empty() ? "" : ",", actor->GetFormID(), Escape(actor->GetDisplayFullName()), IsFriend(actor->GetActorBase()));
+			residents += std::format("{}{{\"id\":\"{:08X}\",\"name\":\"{}\",\"rank\":{},\"child\":{},\"asleep\":{}}}", residents.empty() ? "" : ",", actor->GetFormID(), Escape(actor->GetDisplayFullName()),
+				RankOf(actor->GetActorBase()), actor->IsChild(), IsAsleep(actor));
 		}
 		// Who the owner's and the cell's people are by name, and where the game holds them: the proof of what an unloaded cell shows.
 		std::string people;
@@ -688,32 +1103,63 @@ namespace knock
 			people += std::format("{}{{\"id\":\"{:08X}\",\"name\":\"{}\",\"parent\":\"{:08X}\",\"save\":\"{:08X}\",\"process\":{},\"dead\":{},\"disabled\":{}}}", people.empty() ? "" : ",",
 				id, Escape(actor->GetDisplayFullName()), parent ? parent->GetFormID() : 0, save ? save->GetFormID() : 0, actor->GetActorRuntimeData().currentProcess != nullptr, actor->IsDead(), actor->IsDisabled());
 		}
-		const char* answer = verdict != Verdict::kHome ? "none" : (Decide(home) == Answer::kLetIn ? "let in" : (Decide(home) == Answer::kNobody ? "nobody" : "too late"));
+		std::string decision = "null";
+		if (verdict == Verdict::kHome)
+		{
+			const auto in = Gather(home);
+			if (in.speaker) { decision = DecisionJson("check", in, Judge(in)); }
+		}
 		return std::format(
-			"{{\"ok\":true,\"verdict\":\"{}\",\"answer\":\"{}\",\"cell\":\"{:08X}\",\"cellAttached\":{},\"owner\":\"{:08X}\",\"ownerType\":\"{}\",\"residents\":[{}],\"ownerPeople\":[{}]}}",
-			Name(verdict), answer, home.cell ? home.cell->GetFormID() : 0, home.cell ? home.cell->IsAttached() : false, home.owner ? home.owner->GetFormID() : 0,
+			"{{\"ok\":true,\"verdict\":\"{}\",\"decision\":{},\"refusalActive\":{},\"cell\":\"{:08X}\",\"cellAttached\":{},\"owner\":\"{:08X}\",\"ownerType\":\"{}\",\"residents\":[{}],\"ownerPeople\":[{}]}}",
+			Name(verdict), decision, RefusalActive(a_refID), home.cell ? home.cell->GetFormID() : 0, home.cell ? home.cell->IsAttached() : false, home.owner ? home.owner->GetFormID() : 0,
 			home.ownerNPC ? "npc" : (home.ownerFaction ? "faction" : (home.owner ? "other" : "none")), residents, people);
 	}
 
-	std::string KnockJson(std::uint32_t a_refID)
+	std::string ActJson(std::uint32_t a_refID, const char* a_act)
 	{
 		auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(a_refID);
 		if (!door) { return std::format("{{\"ok\":false,\"error\":\"no reference {:08X}\"}}", a_refID); }
+		const std::string_view act = a_act ? a_act : "";
+		const Act which = act == "persuade" ? Act::kPersuade : (act == "intimidate" ? Act::kIntimidate : Act::kKnock);
+		g_tableBuilt = false;
 		Home home;
 		const auto verdict = Classify(door, home);
 		if (verdict != Verdict::kHome) { return std::format("{{\"ok\":false,\"verdict\":\"{}\"}}", Name(verdict)); }
-		if (DoKnock(door, home)) { PassToGame(door); }
-		return std::format("{{\"ok\":true,\"state\":{}}}", StateJson());
+		Attempt(door, home, which);
+		return std::format("{{\"ok\":true,\"op\":\"{}\",\"decision\":{},\"state\":{}}}", ActName(which), g_lastDecision, StateJson());
 	}
 
-	std::string ChoiceJson(std::uint32_t a_refID)
+	std::string ChoiceJson(std::uint32_t a_refID, bool a_refusalBox)
 	{
 		auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(a_refID);
 		if (!door) { return std::format("{{\"ok\":false,\"error\":\"no reference {:08X}\"}}", a_refID); }
 		Home home;
 		const auto verdict = Classify(door, home);
 		if (verdict != Verdict::kHome) { return std::format("{{\"ok\":false,\"verdict\":\"{}\"}}", Name(verdict)); }
-		return std::format("{{\"ok\":{}}}", ShowChoice(door, home));
+		const bool refusal = a_refusalBox || RefusalActive(a_refID);
+		if (refusal && !g_refusal.door) { return R"({"ok":false,"error":"no refusal to answer; knock first"})"; }
+		const bool shown = refusal ? ShowRefusalBox(door, home) : ShowChoice(door, home);
+		return std::format("{{\"ok\":{},\"box\":\"{}\",\"buttons\":{}}}", shown, refusal ? "refusal" : "knock", g_buttons.size());
+	}
+
+	std::string SetJson(const std::function<std::optional<int>(const char*)>& a_field, bool a_clear)
+	{
+		if (a_clear) { g_over = {}; }
+		else
+		{
+			if (auto v = a_field("speech")) { g_over.speech = v; }
+			if (auto v = a_field("rank")) { g_over.rank = v; }
+			if (auto v = a_field("playerLevel")) { g_over.playerLevel = v; }
+			if (auto v = a_field("theirLevel")) { g_over.theirLevel = v; }
+			if (auto v = a_field("confidence")) { g_over.confidence = v; }
+			if (auto v = a_field("bounty")) { g_over.bounty = v; }
+			if (auto v = a_field("stolen")) { g_over.stolen = v; }
+			if (auto v = a_field("night")) { g_over.night = *v != 0; }
+			if (auto v = a_field("asleep")) { g_over.asleep = *v != 0; }
+			if (auto v = a_field("resetRefusal"); v && *v) { g_refusal = {}; }
+		}
+		logger::info("DevBench {} the decision overrides", a_clear ? "cleared" : "set");
+		return StateJson();
 	}
 
 	std::string EndLetInJson()

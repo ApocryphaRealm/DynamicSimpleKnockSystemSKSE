@@ -13,6 +13,24 @@ namespace settings
 	inline int dayEndHour = 20;           // iDayEndHour:General - 0 to 24, the hour the night begins
 	inline std::uint32_t logLevel = 2;    // uLogLevel:Debug - 2 = info
 
+	// [Decision] - who lets the player in. Speech values are the player's Speech skill (0 to 100).
+	inline int friendRank = 1;            // iFriendRank - relationship rank from which a knock is always answered: 1 friend .. 4 lover
+	inline int knockSpeech = 50;          // iKnockSpeech - Speech a plain Knock needs from a stranger, before the penalties
+	inline int persuadeSpeech = 30;       // iPersuadeSpeech - Speech Persuade needs, before the same penalties
+	inline int nightPenalty = 15;         // iNightPenalty - added at night
+	inline int asleepPenalty = 15;        // iAsleepPenalty - added when the one answering was asleep
+	inline int bountyGold = 1;            // iBountyGold - a bounty of this much or more in their hold counts (0 = ignore bounties)
+	inline int bountyPenalty = 25;        // iBountyPenalty
+	inline int thiefGold = 1;             // iThiefGold - seen stealing goods worth this much or more in their hold (0 = ignore)
+	inline int thiefPenalty = 20;         // iThiefPenalty
+	inline int dislikePenalty = 15;       // iDislikePenalty - for each rank below acquaintance (rival 1, foe 2, enemy 3, archnemesis 4)
+	inline int intimidateMargin = 0;      // iIntimidateMargin - how far the player's intimidation must beat theirs
+	inline int retryHours = 1;            // iRetryHours - game hours after a refusal before a new Knock starts over
+
+	// [Voice] - the vanilla topics spoken in the resident's voice. "Plugin|0xID". Not on the page, by design.
+	inline std::string letInTopic = "Skyrim.esm|0x039C2A";    // DialogueGeneric, subtype Trespass Against NPC: "I'll let you stay. This time."
+	inline std::string refuseTopic = "Skyrim.esm|0x06AEA2";   // DialogueGeneric, subtype Time To Go: "You need to leave."
+
 	// [Exclusions] - every value of the section: "Plugin.esp|0x123456" or an editor ID. Not on the page, by design.
 	inline std::vector<std::string> exclusions;
 
