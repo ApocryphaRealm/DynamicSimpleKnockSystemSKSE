@@ -116,7 +116,8 @@ namespace knock
 			RE::TESForm* owner{ nullptr };
 			RE::TESNPC* ownerNPC{ nullptr };
 			RE::TESFaction* ownerFaction{ nullptr };
-			std::vector<RE::Actor*> residents;   // in the cell now, living and enabled
+			std::vector<RE::Actor*> residents;   // who may answer, living and enabled (see FindResidents)
+			const char* method{ "none" };       // how they were found
 		};
 
 		enum class Act : std::uint8_t { kKnock, kPersuade, kIntimidate, kPick, kLeave };
@@ -336,6 +337,44 @@ namespace knock
 			return false;
 		}
 
+		bool Eligible(RE::Actor* a_actor) { return a_actor && !a_actor->IsDisabled() && !a_actor->IsDead() && !IsMannequin(a_actor); }
+
+		// The cell the actor was placed in by its plugin: where it lives, wherever the game holds it now.
+		RE::TESObjectCELL* EditorCell(RE::Actor* a_actor)
+		{
+			RE::NiPoint3 pos, rot;
+			RE::TESForm* worldOrCell = nullptr;
+			if (!a_actor || !a_actor->GetEditorLocation(pos, rot, worldOrCell, nullptr) || !worldOrCell) { return nullptr; }
+			return worldOrCell->As<RE::TESObjectCELL>();
+		}
+
+		// WHO MAY ANSWER (2026-11-06, after the first voiced test: nobody answered at the House of Clan Cruel-Sea, whose three
+		// persistent residents were held elsewhere by their schedules and whose fourth is not persistent, so not in memory).
+		// Every actor in memory is in the table - the process lists and the cells' persistent references hold no actor it
+		// lacks - so the search widens by rule, in order, and stops at the first that finds anybody:
+		//   1. in the cell now (the actor's current parent cell, else its save cell);
+		//   2. lives there (the actor's editor cell is that cell), wherever the game holds them now;
+		//   3. the owner: the owning NPC, or a member of the owning faction.
+		// Alive, enabled, not a mannequin; hostility is judged on whoever is found. A resident who is not persistent and
+		// whose cell is unloaded is not in memory at all, so cannot be found or speak.
+		void FindResidents(Home& a_home)
+		{
+			BuildTable();
+			const auto pass = [&a_home](const char* a_method, auto&& a_match) {
+				for (const auto id : g_actors)
+				{
+					auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
+					if (Eligible(actor) && a_match(actor)) { a_home.residents.push_back(actor); }
+				}
+				if (!a_home.residents.empty()) { a_home.method = a_method; }
+				return !a_home.residents.empty();
+			};
+			if (pass("in the cell now", [&a_home](RE::Actor* a) { return CurrentCell(a) == a_home.cell; })) { return; }
+			if (pass("lives there (editor cell)", [&a_home](RE::Actor* a) { return EditorCell(a) == a_home.cell; })) { return; }
+			if (a_home.ownerNPC && pass("the owner", [&a_home](RE::Actor* a) { return a->GetActorBase() == a_home.ownerNPC; })) { return; }
+			if (a_home.ownerFaction) { pass("the owning faction", [&a_home](RE::Actor* a) { return a->IsInFaction(a_home.ownerFaction); }); }
+		}
+
 		Verdict Classify(RE::TESObjectREFR* a_door, Home& a_home)
 		{
 			if (!settings::enabled) { return Verdict::kOff; }
@@ -374,13 +413,7 @@ namespace knock
 				if (a_home.ownerFaction && player->IsInFaction(a_home.ownerFaction)) { return Verdict::kPlayersOwn; }
 			}
 
-			BuildTable();
-			for (const auto id : g_actors)
-			{
-				auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
-				if (!actor || CurrentCell(actor) != cell || actor->IsDisabled() || actor->IsDead() || IsMannequin(actor)) { continue; }
-				a_home.residents.push_back(actor);
-			}
+			FindResidents(a_home);
 
 			if (!owner && a_home.residents.empty()) { return Verdict::kNotAHome; }
 
@@ -568,6 +601,20 @@ namespace knock
 			std::string what;
 		};
 
+		// Whether the topic has a line whose conditions pass for this speaker (voice type and the rest), as the game will ask.
+		// Read from the forms in memory, so it holds for a speaker whose cell is not loaded.
+		bool HasLineFor(RE::TESTopic* a_topic, RE::Actor* a_speaker)
+		{
+			if (!a_topic || !a_speaker || !a_topic->topicInfos) { return false; }
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			for (std::uint32_t i = 0; i < a_topic->numTopicInfos; ++i)
+			{
+				auto* info = a_topic->topicInfos[i];
+				if (info && info->objConditions.IsTrue(a_speaker, player)) { return true; }
+			}
+			return false;
+		}
+
 		// The native ObjectReference.Say(topic, speakAs, false) on the door: the line is played at the door, spoken as the
 		// resident, in their voice. Packing the door binds it a base ObjectReference object, as the VM does for any form it
 		// is handed.
@@ -577,6 +624,15 @@ namespace knock
 			{
 				++g_sayFailed;
 				logger::warn("Say ({}) skipped: door {}, topic {}, speaker {}", a_what, a_door != nullptr, a_topic != nullptr, a_speaker != nullptr);
+				return false;
+			}
+			const bool loaded = a_speaker->Is3DLoaded();
+			if (!HasLineFor(a_topic, a_speaker))
+			{
+				++g_sayFailed;
+				auto* base = a_speaker->GetActorBase();
+				const auto* voice = base ? base->GetVoiceType() : nullptr;
+				logger::info("Say ({}) not sent: topic {:08X} has no line for {:08X} (voice type {:08X}); the message only", a_what, a_topic->GetFormID(), a_speaker->GetFormID(), voice ? voice->GetFormID() : 0);
 				return false;
 			}
 			auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
@@ -600,7 +656,8 @@ namespace knock
 			const bool sent = vm->DispatchMethodCall(object, RE::BSFixedString("Say"), args, callback);
 			if (sent) { ++g_says; }
 			else { ++g_sayFailed; }
-			logger::info("Say ({}): topic {:08X} at door {:08X} as {:08X} {}", a_what, a_topic->GetFormID(), a_door->GetFormID(), a_speaker->GetFormID(), sent ? "sent" : "REFUSED by the VM");
+			logger::info("Say ({}): topic {:08X} at door {:08X} as {:08X} ({}) {}", a_what, a_topic->GetFormID(), a_door->GetFormID(), a_speaker->GetFormID(),
+				loaded ? "speaker loaded" : "speaker not loaded", sent ? "sent" : "REFUSED by the VM");
 			return sent;
 		}
 
@@ -775,12 +832,12 @@ namespace knock
 			{
 				++g_nobody;
 				Notify(strings::TR("DSK_NoAnswer", "Nobody answers."));
-				Event(std::format("{} on {:08X}: nobody in cell {:08X} now", ActName(a_act), a_door->GetFormID(), a_home.cell->GetFormID()));
+				Event(std::format("{} on {:08X}: nobody found for cell {:08X} (not in it now, nobody placed there in memory, no owner in memory)", ActName(a_act), a_door->GetFormID(), a_home.cell->GetFormID()));
 				return;
 			}
 			const auto v = Judge(in);
 			g_lastDecision = DecisionJson(ActName(a_act), in, v);
-			logger::info("decision: {}", g_lastDecision);
+			logger::info("decision ({} found by: {}, {} candidate(s)): {}", ActName(a_act), a_home.method, a_home.residents.size(), g_lastDecision);
 
 			if (a_act == Act::kKnock)
 			{
@@ -1086,8 +1143,8 @@ namespace knock
 		std::string residents;
 		for (auto* actor : home.residents)
 		{
-			residents += std::format("{}{{\"id\":\"{:08X}\",\"name\":\"{}\",\"rank\":{},\"child\":{},\"asleep\":{}}}", residents.empty() ? "" : ",", actor->GetFormID(), Escape(actor->GetDisplayFullName()),
-				RankOf(actor->GetActorBase()), actor->IsChild(), IsAsleep(actor));
+			residents += std::format("{}{{\"id\":\"{:08X}\",\"name\":\"{}\",\"rank\":{},\"child\":{},\"asleep\":{},\"loaded\":{},\"lineLetIn\":{},\"lineRefuse\":{}}}", residents.empty() ? "" : ",", actor->GetFormID(), Escape(actor->GetDisplayFullName()),
+				RankOf(actor->GetActorBase()), actor->IsChild(), IsAsleep(actor), actor->Is3DLoaded(), HasLineFor(g_letInTopic, actor), HasLineFor(g_refuseTopic, actor));
 		}
 		// Who the owner's and the cell's people are by name, and where the game holds them: the proof of what an unloaded cell shows.
 		std::string people;
@@ -1110,8 +1167,8 @@ namespace knock
 			if (in.speaker) { decision = DecisionJson("check", in, Judge(in)); }
 		}
 		return std::format(
-			"{{\"ok\":true,\"verdict\":\"{}\",\"decision\":{},\"refusalActive\":{},\"cell\":\"{:08X}\",\"cellAttached\":{},\"owner\":\"{:08X}\",\"ownerType\":\"{}\",\"residents\":[{}],\"ownerPeople\":[{}]}}",
-			Name(verdict), decision, RefusalActive(a_refID), home.cell ? home.cell->GetFormID() : 0, home.cell ? home.cell->IsAttached() : false, home.owner ? home.owner->GetFormID() : 0,
+			"{{\"ok\":true,\"verdict\":\"{}\",\"foundBy\":\"{}\",\"decision\":{},\"refusalActive\":{},\"cell\":\"{:08X}\",\"cellAttached\":{},\"owner\":\"{:08X}\",\"ownerType\":\"{}\",\"residents\":[{}],\"ownerPeople\":[{}]}}",
+			Name(verdict), home.method, decision, RefusalActive(a_refID), home.cell ? home.cell->GetFormID() : 0, home.cell ? home.cell->IsAttached() : false, home.owner ? home.owner->GetFormID() : 0,
 			home.ownerNPC ? "npc" : (home.ownerFaction ? "faction" : (home.owner ? "other" : "none")), residents, people);
 	}
 
