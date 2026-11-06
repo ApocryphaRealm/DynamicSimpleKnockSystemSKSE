@@ -8,7 +8,7 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 * **failed** - built but crashed or malfunctioned; the number was reclaimed
 * **scratch** - a hypothesis-test build that never held a real number
 
-## 1.0.0 - 2026-11-05 - untested
+## 1.0.0 - 2026-11-06 - working
 
 ### Added
 - Settings page: a Who lets you in section with every threshold as a precise slider, in the INI under [Decision]. All new choices and messages in the eleven languages. DevBench dsk.control: op=set and op=clear for the decision inputs (speech, rank, levels, confidence, bounty, stolen, night, asleep), op=persuade, op=intimidate, op=refusalbox; op=check and op=knock answer with the decision's inputs and result.

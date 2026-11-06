@@ -1,6 +1,6 @@
 # Dynamic Simple Knock System SKSE
 
-Look at the locked door of somebody's home and the prompt says Knock. Press your activate control and a box offers Knock, Pick the lock, or Leave. By day a knock gets you a "Come in." At night only a friend gets in. A refusal changes nothing and the door stays locked. A lock is only picked when you choose it, and sneaking goes straight to the lock.
+Look at the locked door of somebody's home and the prompt says Knock. Press your activate control and a box offers Knock, Pick the lock, or Leave. Knock, and whoever lives there answers from behind the door, aloud in their own voice, and decides whether to let you in. Refused, you may Persuade or Intimidate them, pick the lock, or leave. A lock is only picked when you choose it, and sneaking goes straight to the lock.
 
 No plugin, no scripts, no patches. It reads who owns the door or the space behind it while you play, so a door from any mod works. Nobody needs to carry a key.
 
@@ -14,9 +14,13 @@ Left alone: you sneaking or in combat, you holding the key, your own home, desti
 
 ## Who answers
 
-Only somebody in the destination cell right now: a living, enabled actor whose current cell is that cell (the owner's choice, 2026-11-05). Nobody there: "Nobody answers." Mannequins do not count. A friend is a relationship rank above acquaintance, read from the game.
+The search widens in order and stops at the first that finds anybody: somebody in the destination cell now; a resident who lives there (their editor cell is that cell), wherever the game holds them; the owning NPC or a member of the owning faction. Alive, enabled, not hostile. The one with the best relationship to you answers, adults before children, the awake before the asleep. Nobody found: "Nobody answers." A non-persistent resident of an unloaded cell is not seen.
 
-An interior that is not loaded holds only its persistent actors in memory, so residents who are not persistent are not seen, and their door says "Nobody answers."
+## Who lets you in
+
+A friend or better (relationship rank `iFriendRank`, 1) always lets you in. Anyone else when your Speech reaches `iKnockSpeech` (50) plus 15 at night, 15 if they were asleep, 25 with a bounty in their hold, 20 if you were seen stealing there, and 15 per rank of dislike. Refused, Persuade needs `iPersuadeSpeech` (30) plus the same additions; Intimidate compares your level times (1 + Speech/100) against theirs scaled by the game's fIntimidateConfidenceMult settings. Each once per refusal; a new knock starts over after `iRetryHours` (1). Every number is in the INI under `[Decision]` and on the settings page.
+
+The answer is spoken from the door with the native `ObjectReference.Say(topic, speakAs)`: vanilla DialogueGeneric topics (`[Voice]`), so the resident's voice type picks the line. A voice type with no line in the topic answers by message only. A let-in unlocks the door; the next press opens it.
 
 ## Being let in
 
