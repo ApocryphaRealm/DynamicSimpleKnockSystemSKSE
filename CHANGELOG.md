@@ -15,6 +15,7 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 - Peek through the keyhole: with Take a Peek installed, the knock box (and the refusal box when there is room) offers its peek; without it the choice is not shown
 
 ### Fixed
+- The Peek choice's label is in the eleven translation files (it drew English in every language; the finalize gate's translation coverage found it). Text files only; the DLLs are unchanged.
 - Let in, the household no longer says You're not supposed to be here. on entry or when you talk to them, and talking to them opens their normal conversation (owner's test 2026-11-07): the game still counted you as trespassing in the house; while you are inside the house you were let into, that state is cleared and the trespassing conversation is silenced. Their belongings stay theirs: taking them is still theft.
 - No more being told to leave once you are let in (test 2026-11-07: a resident kept saying You need to leave.): from the moment the door is unlocked for you until it locks again, the game's own get-out lines (Time To Go and the trespass warnings, from any plugin) are silenced, including on the way in.
 - No report to the guards once you are let in: while a let-in by Knock, Persuade or Intimidate holds and you are in that house, nobody can start the trespass warnings that end in a trespass crime and bounty, residents and guards alike, on top of the house being treated as public. Stealing and other crimes are still crimes.
