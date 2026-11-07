@@ -248,6 +248,8 @@ namespace knock
 		std::vector<RE::TESTopic*> g_nagTopics;   // found once at data load
 		std::vector<MutedTopic> g_muted;          // non-empty while muted
 		std::uint32_t g_nagMutes = 0, g_nagLeaks = 0;
+		std::uint32_t g_trespassFlagCleared = 0, g_trespassFlagClearedThisLetIn = 0;
+		constexpr RE::FormID kTrespassBlockingTopic = 0x08872A;   // Skyrim.esm DialogueGenericTrespassingBlockingTopic
 		std::deque<std::string> g_events;
 
 		// THE SPEECH-CHECK LINES (see the file header). The game's generic speech-check answers are shared infos of
@@ -845,6 +847,39 @@ namespace knock
 			return true;
 		}
 
+		// THE PLAYER'S TRESPASSING STATE (the owner, 2026-11-07 17:13: let in, Olfrid still said "You're not supposed to be
+		// here." on entry and as his only answer when spoken to). That line is DialogueGenericTrespassingBlockingTopic 08872A:
+		// one info (088739, shared line 08875B "You're not supposed to be in here."), conditions IsTrespassing on the player
+		// == 1 and on the speaker == 0, a blocking topic that takes over the conversation. So the game held the player as
+		// trespassing in spite of the Public flag. Its source is the player's own kIsTrespassing flag, which the game sets
+		// during the player's update; while a let-in holds and the player stands in its cell, the flag is cleared right after
+		// every update, so IsTrespassing reads false for the rest of the frame. (The blocking topic is also muted with the
+		// nags.) Ownership is untouched: taking their things is still theft.
+		void ClearTrespassing(RE::PlayerCharacter* a_player)
+		{
+			if (!g_letIn.cell || !a_player) { return; }
+			auto& flags = a_player->GetActorRuntimeData().boolFlags;
+			if (!flags.all(RE::Actor::BOOL_FLAGS::kIsTrespassing)) { return; }
+			auto* cell = a_player->GetParentCell();
+			if (!cell || cell->GetFormID() != g_letIn.cell) { return; }
+			flags.reset(RE::Actor::BOOL_FLAGS::kIsTrespassing);
+			++g_trespassFlagCleared;
+			if (++g_trespassFlagClearedThisLetIn == 1)
+			{
+				Event(std::format("the game marked the player as trespassing in let-in cell {:08X}; cleared (and after every update while the let-in holds)", g_letIn.cell));
+			}
+		}
+
+		struct PlayerHooks
+		{
+			static void Update(RE::PlayerCharacter* a_this, float a_delta)
+			{
+				_Update(a_this, a_delta);
+				ClearTrespassing(a_this);
+			}
+			static inline REL::Relocation<decltype(Update)> _Update;
+		};
+
 		struct TrespassHooks
 		{
 			static bool Character(RE::Character* a_this, RE::TrespassPackage* a_package)
@@ -975,6 +1010,7 @@ namespace knock
 			g_letIn.cell = a_home.cell->GetFormID();
 			g_letIn.cellWasPublic = a_home.cell->cellFlags.any(RE::TESObjectCELL::Flag::kPublicArea);
 			g_trespassBlockedThisLetIn = 0;
+			g_trespassFlagClearedThisLetIn = 0;
 			ApplyLetIn();
 			MuteNagsForLetIn();
 		}
@@ -1368,6 +1404,8 @@ namespace knock
 		TrespassHooks::_Character = character.write_vfunc(0xD7, TrespassHooks::Character);
 		REL::Relocation<std::uintptr_t> player{ RE::VTABLE_PlayerCharacter[0] };
 		TrespassHooks::_Player = player.write_vfunc(0xD7, TrespassHooks::Player);
+		PlayerHooks::_Update = player.write_vfunc(0xAD, PlayerHooks::Update);
+		logger::info("player hook: Update (slot 0xAD) was at {:X}", PlayerHooks::_Update.address());
 		logger::info("trespass hooks: InitiateTresPassPackage (slot 0xD7) on Character was at {:X}, on PlayerCharacter at {:X}", TrespassHooks::_Character.address(), TrespassHooks::_Player.address());
 
 		if (auto* ui = RE::UI::GetSingleton())
@@ -1447,7 +1485,12 @@ namespace knock
 				}
 			}
 		}
-		logger::info("get-out nag topics (Time To Go, Trespass, Trespass Against NPC): {}", g_nagTopics.size());
+		if (auto* blocking = dh ? dh->LookupForm<RE::TESTopic>(kTrespassBlockingTopic, "Skyrim.esm") : nullptr;
+			blocking && std::find(g_nagTopics.begin(), g_nagTopics.end(), blocking) == g_nagTopics.end())
+		{
+			g_nagTopics.push_back(blocking);
+		}
+		logger::info("get-out nag topics (Time To Go, Trespass, Trespass Against NPC, the trespassing blocking topic): {}", g_nagTopics.size());
 		MuteNags(nullptr);   // a let-in already holding (settings reloaded mid-let-in)
 
 		// The speech-check lines, Skyrim.esm only.
@@ -1540,14 +1583,14 @@ namespace knock
 			"\"topics\":{{\"letIn\":\"{:08X}\",\"refuse\":\"{:08X}\"}},\"settings\":{},\"overrides\":{},\"lastDecision\":{},"
 			"\"table\":{{\"built\":{},\"actors\":{},\"ms\":{}}},"
 			"\"exclusions\":{{\"forms\":{},\"editorIDs\":{},\"unresolved\":{}}},"
-			"\"counts\":{{\"prompts\":{},\"knocks\":{},\"letIn\":{},\"nobody\":{},\"refused\":{},\"persuaded\":{},\"notPersuaded\":{},\"intimidated\":{},\"notIntimidated\":{},\"says\":{},\"sayFailed\":{},\"trespassBlocked\":{},\"nagMutes\":{},\"nagLeaks\":{},\"nagsMutedNow\":{}}},\"events\":[{}]}}",
+			"\"counts\":{{\"prompts\":{},\"knocks\":{},\"letIn\":{},\"nobody\":{},\"refused\":{},\"persuaded\":{},\"notPersuaded\":{},\"intimidated\":{},\"notIntimidated\":{},\"says\":{},\"sayFailed\":{},\"trespassBlocked\":{},\"nagMutes\":{},\"nagLeaks\":{},\"nagsMutedNow\":{},\"trespassFlagCleared\":{}}},\"events\":[{}]}}",
 			settings::enabled, settings::dayStartHour, settings::dayEndHour, calendar ? calendar->GetHour() : -1.0F, IsDay(), g_simpleActivate, g_promptDoor, g_choiceDoor, g_buttons.size(),
 			g_letIn.door, g_letIn.cell, g_letIn.cellWasPublic,
 			g_refusal.door, g_refusal.speaker, RefusalActive(g_refusal.door), g_refusal.triedPersuade, g_refusal.triedIntimidate,
 			g_letInTopic ? g_letInTopic->GetFormID() : 0, g_refuseTopic ? g_refuseTopic->GetFormID() : 0, decision, overrides, g_lastDecision,
 			g_tableBuilt, g_tableActors, g_tableMs,
 			g_excludedIDs.size(), g_excludedEditorIDs.size(), g_excludedUnresolved,
-			g_promptsShown, g_knocks, g_letIns, g_nobody, g_refused, g_persuaded, g_notPersuaded, g_intimidated, g_notIntimidated, g_says, g_sayFailed, g_trespassBlocked, g_nagMutes, g_nagLeaks, !g_muted.empty(), events);
+			g_promptsShown, g_knocks, g_letIns, g_nobody, g_refused, g_persuaded, g_notPersuaded, g_intimidated, g_notIntimidated, g_says, g_sayFailed, g_trespassBlocked, g_nagMutes, g_nagLeaks, !g_muted.empty(), g_trespassFlagCleared, events);
 	}
 
 	std::string CheckJson(std::uint32_t a_refID)
