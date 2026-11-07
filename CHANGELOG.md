@@ -11,9 +11,11 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 ## 1.1.0 - 2026-11-07 - untested
 
 ### Added
+- Persuade and Intimidate answer in their own voice lines, the game's generic speech-check answers: persuaded (Okay. Just this once. / How can I argue with that? / Okay, okay. You've talked me into it.), not persuaded (You expect me to believe that? / Nah. I don't think so. / That doesn't change anything.), intimidated (No need to get rough! / Whatever you say! / Don't hurt me! You win.), not intimidated (I don't have to take that from you! / I don't have to take this from the likes of you.). A voice type without these lines (a DLC or mod voice) still says the let-in or refusal line.
 - Peek through the keyhole: with Take a Peek installed, the knock box (and the refusal box when there is room) offers its peek; without it the choice is not shown
 
 ### Fixed
+- No report to the guards once you are let in: while a let-in by Knock, Persuade or Intimidate holds and you are in that house, nobody can start the trespass warnings that end in a trespass crime and bounty, residents and guards alike, on top of the house being treated as public. Stealing and other crimes are still crimes.
 - Locked in from the inside (Nexus report, 2026-11-07): while a let-in holds, a door of that house that leads outside and has been locked by the game (a resident's AI package locks their home as they leave or go to bed; 161 vanilla homes carry a lock on the inside door) is unlocked in memory when you look at it or press it, so you can always walk out without a lockpick. The mod itself never locked the inside door; the outside door still locks again once you are outside.
 - Nobody home, nobody answers (Nexus report, 2026-11-07): a resident out in town, at work or in another cell no longer answers and lets you in. Only a living, enabled resident inside the house now answers; the 1.0.0 widening to residents placed there and to the owner or owning faction wherever they were is gone. Nobody inside: the box still offers Knock, Pick the lock and Peek; a knock shows No one's home. Come back later. (eleven languages), with no spoken line, no let-in and no Persuade or Intimidate. A refusal box from earlier is shown only while the one who refused is still inside.
 
