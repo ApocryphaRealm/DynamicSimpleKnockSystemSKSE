@@ -64,8 +64,9 @@
 // trespass alarm, used by residents and guards alike) is refused on every Character and on the player while the player is
 // in the let-in cell (SuppressTrespass), with a log line. What stays a crime stays one: stealing, pickpocketing, assault.
 // Nor is the player nagged to get out: the engine plays Time To Go (06AEA2 "You need to leave.", infos conditioned on voice
-// type only) by itself even in a Public cell, so while the player is in the let-in cell every Time To Go / Trespass /
-// Trespass Against NPC topic holds no lines (MuteNags), and a watch on spoken lines logs any that still get through.
+// type only) by itself even in a Public cell, so for the whole let-in, from the moment the door is unlocked for the player
+// until it locks again, every Time To Go / Trespass / Trespass Against NPC topic holds no lines (MuteNags), and a watch on
+// spoken lines logs any begun while muted.
 #include "PCH.h"
 
 #include "Knock.h"
@@ -233,10 +234,12 @@ namespace knock
 
 		// "GET OUT" NAGS (test 1305, 2026-11-07: let in by day, a resident kept saying "You need to leave."). The engine plays
 		// the Time To Go topic (DialogueGeneric 06AEA2, its infos conditioned on voice type only - nothing a let-in can make
-		// false) and the trespass topics on its own, with no trespass package and in a Public cell. So while the player is
-		// inside a let-in cell, every topic of subtype Time To Go, Trespass and Trespass Against NPC, from any plugin, holds no
-		// lines: there is nothing for the game to say. The lists come back as soon as the player is anywhere else (the next
-		// load) or the let-in ends. Knock's own refusal (spoken at a door, the player outside) is never inside a muted moment.
+		// false) and the trespass topics on its own, with no trespass package and in a Public cell. So for the whole let-in,
+		// from the moment the door is unlocked for the player, every topic of subtype Time To Go, Trespass and Trespass Against
+		// NPC, from any plugin, holds no lines: there is nothing for the game to say. (Muting only after the load into the
+		// house, as first built, let one nag chosen on the way in still play - the owner heard it, test 49a0.) The lists come
+		// back when the let-in ends. Knock's own refusal is only spoken when no let-in holds. The let-in line itself comes
+		// from a Trespass Against NPC topic, so that one topic is muted 3 seconds later, once its Say has picked the line.
 		struct MutedTopic
 		{
 			RE::TESTopic* topic{ nullptr };
@@ -701,6 +704,8 @@ namespace knock
 			std::string what;
 		};
 
+		void UnmuteForSay(RE::TESTopic* a_topic);
+
 		// Whether the topic has a line whose conditions pass for this speaker (voice type and the rest), as the game will ask.
 		// Read from the forms in memory, so it holds for a speaker whose cell is not loaded.
 		bool HasLineFor(RE::TESTopic* a_topic, RE::Actor* a_speaker)
@@ -727,6 +732,7 @@ namespace knock
 				return false;
 			}
 			const bool loaded = a_speaker->Is3DLoaded();
+			UnmuteForSay(a_topic);
 			if (!HasLineFor(a_topic, a_speaker))
 			{
 				++g_sayFailed;
@@ -891,25 +897,63 @@ namespace knock
 			g_muted.clear();
 		}
 
-		void MuteNags()
+		// Mutes every nag topic not muted yet, but a_except (the let-in line's own topic, while its Say is still picking).
+		void MuteNags(RE::TESTopic* a_except)
 		{
-			if (!g_muted.empty()) { return; }
+			if (!g_letIn.door) { return; }
+			const bool first = g_muted.empty();
+			std::size_t added = 0;
 			for (auto* topic : g_nagTopics)
 			{
+				if (topic == a_except) { continue; }
+				if (std::find_if(g_muted.begin(), g_muted.end(), [topic](const MutedTopic& m) { return m.topic == topic; }) != g_muted.end()) { continue; }
 				g_muted.push_back({ topic, topic->numTopicInfos });
 				topic->numTopicInfos = 0;
+				++added;
 			}
-			++g_nagMutes;
-			Event(std::format("get-out nags muted: player inside let-in cell {:08X}, {} Time To Go / Trespass topic(s) hold no lines", g_letIn.cell, g_muted.size()));
+			if (first && added) { ++g_nagMutes; }
+			if (added)
+			{
+				Event(std::format("get-out nags muted for the let-in of cell {:08X}: {} more topic(s), {} of {} now hold no lines{}", g_letIn.cell, added, g_muted.size(),
+					g_nagTopics.size(), a_except && std::find(g_nagTopics.begin(), g_nagTopics.end(), a_except) != g_nagTopics.end() ? std::format(" (topic {:08X} follows in 3 s)", a_except->GetFormID()) : std::string()));
+			}
 		}
 
-		// After every load: muted exactly while the player stands in the let-in cell.
-		void UpdateNagMute()
+		// One of Knock's own Says on a muted topic (a refusal at another door while a let-in holds): the topic gets its lines
+		// back for the Say and is muted again 3 seconds later, if the let-in still holds.
+		void UnmuteForSay(RE::TESTopic* a_topic)
 		{
-			auto* player = RE::PlayerCharacter::GetSingleton();
-			auto* cell = player ? player->GetParentCell() : nullptr;
-			if (g_letIn.cell && cell && cell->GetFormID() == g_letIn.cell) { MuteNags(); }
-			else { UnmuteNags("the player is not in a let-in cell"); }
+			const auto it = std::find_if(g_muted.begin(), g_muted.end(), [a_topic](const MutedTopic& m) { return m.topic == a_topic; });
+			if (it == g_muted.end()) { return; }
+			a_topic->numTopicInfos = it->count;
+			g_muted.erase(it);
+			logger::debug("nag topic {:08X} given its lines back for Knock's own Say", a_topic->GetFormID());
+			const auto door = g_letIn.door;
+			std::thread([door]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+				if (auto* tasks = SKSE::GetTaskInterface())
+				{
+					tasks->AddTask([door]() {
+						if (door && g_letIn.door == door) { MuteNags(nullptr); }
+					});
+				}
+			}).detach();
+		}
+
+		// At the let-in: all nags now but the let-in line's topic, which follows once its Say has run.
+		void MuteNagsForLetIn()
+		{
+			MuteNags(g_letInTopic);
+			const auto door = g_letIn.door;
+			std::thread([door]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+				if (auto* tasks = SKSE::GetTaskInterface())
+				{
+					tasks->AddTask([door]() {
+						if (g_letIn.door == door) { MuteNags(nullptr); }
+					});
+				}
+			}).detach();
 		}
 
 		void EndLetIn(const char* a_why)
@@ -932,6 +976,7 @@ namespace knock
 			g_letIn.cellWasPublic = a_home.cell->cellFlags.any(RE::TESObjectCELL::Flag::kPublicArea);
 			g_trespassBlockedThisLetIn = 0;
 			ApplyLetIn();
+			MuteNagsForLetIn();
 		}
 
 		float Now()
@@ -1307,7 +1352,6 @@ namespace knock
 					auto* cell = player ? player->GetParentCell() : nullptr;
 					if (cell && !cell->IsInteriorCell()) { EndLetIn("the player is outside"); }
 				}
-				if (a_event && !a_event->opening && a_event->menuName == RE::LoadingMenu::MENU_NAME) { UpdateNagMute(); }
 				return RE::BSEventNotifyControl::kContinue;
 			}
 		};
@@ -1404,7 +1448,7 @@ namespace knock
 			}
 		}
 		logger::info("get-out nag topics (Time To Go, Trespass, Trespass Against NPC): {}", g_nagTopics.size());
-		UpdateNagMute();
+		MuteNags(nullptr);   // a let-in already holding (settings reloaded mid-let-in)
 
 		// The speech-check lines, Skyrim.esm only.
 		RestoreNarrowed();
@@ -1465,6 +1509,7 @@ namespace knock
 			{
 				g_letIn = saved;
 				ApplyLetIn();
+				MuteNags(nullptr);
 				logger::info("the save holds a let-in: door {:08X}, cell {:08X}", g_letIn.door, g_letIn.cell);
 			}
 		}
