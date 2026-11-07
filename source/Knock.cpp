@@ -63,6 +63,9 @@
 // night, which is what makes a home "closed". As a second guard, InitiateTresPassPackage (the warnings that end in a
 // trespass alarm, used by residents and guards alike) is refused on every Character and on the player while the player is
 // in the let-in cell (SuppressTrespass), with a log line. What stays a crime stays one: stealing, pickpocketing, assault.
+// Nor is the player nagged to get out: the engine plays Time To Go (06AEA2 "You need to leave.", infos conditioned on voice
+// type only) by itself even in a Public cell, so while the player is in the let-in cell every Time To Go / Trespass /
+// Trespass Against NPC topic holds no lines (MuteNags), and a watch on spoken lines logs any that still get through.
 #include "PCH.h"
 
 #include "Knock.h"
@@ -227,6 +230,21 @@ namespace knock
 		std::uint32_t g_knocks = 0, g_letIns = 0, g_nobody = 0, g_refused = 0, g_promptsShown = 0;
 		std::uint32_t g_persuaded = 0, g_notPersuaded = 0, g_intimidated = 0, g_notIntimidated = 0, g_says = 0, g_sayFailed = 0;
 		std::uint32_t g_trespassBlocked = 0, g_trespassBlockedThisLetIn = 0;
+
+		// "GET OUT" NAGS (test 1305, 2026-11-07: let in by day, a resident kept saying "You need to leave."). The engine plays
+		// the Time To Go topic (DialogueGeneric 06AEA2, its infos conditioned on voice type only - nothing a let-in can make
+		// false) and the trespass topics on its own, with no trespass package and in a Public cell. So while the player is
+		// inside a let-in cell, every topic of subtype Time To Go, Trespass and Trespass Against NPC, from any plugin, holds no
+		// lines: there is nothing for the game to say. The lists come back as soon as the player is anywhere else (the next
+		// load) or the let-in ends. Knock's own refusal (spoken at a door, the player outside) is never inside a muted moment.
+		struct MutedTopic
+		{
+			RE::TESTopic* topic{ nullptr };
+			std::uint32_t count{ 0 };
+		};
+		std::vector<RE::TESTopic*> g_nagTopics;   // found once at data load
+		std::vector<MutedTopic> g_muted;          // non-empty while muted
+		std::uint32_t g_nagMutes = 0, g_nagLeaks = 0;
 		std::deque<std::string> g_events;
 
 		// THE SPEECH-CHECK LINES (see the file header). The game's generic speech-check answers are shared infos of
@@ -865,8 +883,38 @@ namespace knock
 			return true;
 		}
 
+		void UnmuteNags(const char* a_why)
+		{
+			if (g_muted.empty()) { return; }
+			for (const auto& m : g_muted) { m.topic->numTopicInfos = m.count; }
+			logger::debug("get-out nags back ({}): {} topic(s)", a_why, g_muted.size());
+			g_muted.clear();
+		}
+
+		void MuteNags()
+		{
+			if (!g_muted.empty()) { return; }
+			for (auto* topic : g_nagTopics)
+			{
+				g_muted.push_back({ topic, topic->numTopicInfos });
+				topic->numTopicInfos = 0;
+			}
+			++g_nagMutes;
+			Event(std::format("get-out nags muted: player inside let-in cell {:08X}, {} Time To Go / Trespass topic(s) hold no lines", g_letIn.cell, g_muted.size()));
+		}
+
+		// After every load: muted exactly while the player stands in the let-in cell.
+		void UpdateNagMute()
+		{
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			auto* cell = player ? player->GetParentCell() : nullptr;
+			if (g_letIn.cell && cell && cell->GetFormID() == g_letIn.cell) { MuteNags(); }
+			else { UnmuteNags("the player is not in a let-in cell"); }
+		}
+
 		void EndLetIn(const char* a_why)
 		{
+			UnmuteNags("the let-in ended");
 			if (!g_letIn.door) { return; }
 			auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(g_letIn.door);
 			auto* cell = RE::TESForm::LookupByID<RE::TESObjectCELL>(g_letIn.cell);
@@ -1227,8 +1275,24 @@ namespace knock
 		};
 
 		struct Sinks :
-			public RE::BSTEventSink<RE::MenuOpenCloseEvent>
+			public RE::BSTEventSink<RE::MenuOpenCloseEvent>,
+			public RE::BSTEventSink<RE::TESTopicInfoEvent>
 		{
+			// A watch for the mute: any line of a nag topic begun while muted is logged and counted (it should never happen).
+			RE::BSEventNotifyControl ProcessEvent(const RE::TESTopicInfoEvent* a_event, RE::BSTEventSource<RE::TESTopicInfoEvent>*) override
+			{
+				if (!a_event || g_muted.empty() || a_event->type != RE::TESTopicInfoEvent::TopicInfoEventType::kTopicBegin) { return RE::BSEventNotifyControl::kContinue; }
+				auto* info = RE::TESForm::LookupByID<RE::TESTopicInfo>(a_event->topicInfoFormID);
+				auto* topic = info ? info->parentTopic : nullptr;
+				if (topic && std::find(g_nagTopics.begin(), g_nagTopics.end(), topic) != g_nagTopics.end())
+				{
+					++g_nagLeaks;
+					Event(std::format("get-out nag LEAKED while muted: info {:08X} of topic {:08X} by {:08X}", a_event->topicInfoFormID, topic->GetFormID(),
+						a_event->speakerRef ? a_event->speakerRef->GetFormID() : 0));
+				}
+				return RE::BSEventNotifyControl::kContinue;
+			}
+
 			static Sinks* Get()
 			{
 				static Sinks sinks;
@@ -1243,6 +1307,7 @@ namespace knock
 					auto* cell = player ? player->GetParentCell() : nullptr;
 					if (cell && !cell->IsInteriorCell()) { EndLetIn("the player is outside"); }
 				}
+				if (a_event && !a_event->opening && a_event->menuName == RE::LoadingMenu::MENU_NAME) { UpdateNagMute(); }
 				return RE::BSEventNotifyControl::kContinue;
 			}
 		};
@@ -1269,6 +1334,8 @@ namespace knock
 		{
 			logger::error("the UI singleton is not ready; a let-in will only end at the next knock");
 		}
+
+		if (auto* events = RE::ScriptEventSourceHolder::GetSingleton()) { events->AddEventSink<RE::TESTopicInfoEvent>(Sinks::Get()); }
 
 		g_simpleActivate = GetModuleHandleW(L"po3_SimpleActivateSKSE") != nullptr;
 		logger::info("Simple Activate {}: the prompt is {}", g_simpleActivate ? "is loaded" : "is not loaded", g_simpleActivate ? "one line" : "two lines");
@@ -1321,6 +1388,23 @@ namespace knock
 		};
 		g_letInTopic = topic(settings::letInTopic, "let in");
 		g_refuseTopic = topic(settings::refuseTopic, "refuse");
+
+		// The get-out nag topics: every Time To Go, Trespass and Trespass Against NPC topic in the load order.
+		UnmuteNags("settings read");
+		g_nagTopics.clear();
+		if (dh)
+		{
+			for (auto* t : dh->GetFormArray<RE::TESTopic>())
+			{
+				const auto sub = t ? t->data.subtype.get() : RE::DIALOGUE_DATA::Subtype::kCustom;
+				if (sub == RE::DIALOGUE_DATA::Subtype::kTimeToGo || sub == RE::DIALOGUE_DATA::Subtype::kTrespass || sub == RE::DIALOGUE_DATA::Subtype::kTrespassAgainstNPC)
+				{
+					g_nagTopics.push_back(t);
+				}
+			}
+		}
+		logger::info("get-out nag topics (Time To Go, Trespass, Trespass Against NPC): {}", g_nagTopics.size());
+		UpdateNagMute();
 
 		// The speech-check lines, Skyrim.esm only.
 		RestoreNarrowed();
@@ -1411,14 +1495,14 @@ namespace knock
 			"\"topics\":{{\"letIn\":\"{:08X}\",\"refuse\":\"{:08X}\"}},\"settings\":{},\"overrides\":{},\"lastDecision\":{},"
 			"\"table\":{{\"built\":{},\"actors\":{},\"ms\":{}}},"
 			"\"exclusions\":{{\"forms\":{},\"editorIDs\":{},\"unresolved\":{}}},"
-			"\"counts\":{{\"prompts\":{},\"knocks\":{},\"letIn\":{},\"nobody\":{},\"refused\":{},\"persuaded\":{},\"notPersuaded\":{},\"intimidated\":{},\"notIntimidated\":{},\"says\":{},\"sayFailed\":{},\"trespassBlocked\":{}}},\"events\":[{}]}}",
+			"\"counts\":{{\"prompts\":{},\"knocks\":{},\"letIn\":{},\"nobody\":{},\"refused\":{},\"persuaded\":{},\"notPersuaded\":{},\"intimidated\":{},\"notIntimidated\":{},\"says\":{},\"sayFailed\":{},\"trespassBlocked\":{},\"nagMutes\":{},\"nagLeaks\":{},\"nagsMutedNow\":{}}},\"events\":[{}]}}",
 			settings::enabled, settings::dayStartHour, settings::dayEndHour, calendar ? calendar->GetHour() : -1.0F, IsDay(), g_simpleActivate, g_promptDoor, g_choiceDoor, g_buttons.size(),
 			g_letIn.door, g_letIn.cell, g_letIn.cellWasPublic,
 			g_refusal.door, g_refusal.speaker, RefusalActive(g_refusal.door), g_refusal.triedPersuade, g_refusal.triedIntimidate,
 			g_letInTopic ? g_letInTopic->GetFormID() : 0, g_refuseTopic ? g_refuseTopic->GetFormID() : 0, decision, overrides, g_lastDecision,
 			g_tableBuilt, g_tableActors, g_tableMs,
 			g_excludedIDs.size(), g_excludedEditorIDs.size(), g_excludedUnresolved,
-			g_promptsShown, g_knocks, g_letIns, g_nobody, g_refused, g_persuaded, g_notPersuaded, g_intimidated, g_notIntimidated, g_says, g_sayFailed, g_trespassBlocked, events);
+			g_promptsShown, g_knocks, g_letIns, g_nobody, g_refused, g_persuaded, g_notPersuaded, g_intimidated, g_notIntimidated, g_says, g_sayFailed, g_trespassBlocked, g_nagMutes, g_nagLeaks, !g_muted.empty(), events);
 	}
 
 	std::string CheckJson(std::uint32_t a_refID)
