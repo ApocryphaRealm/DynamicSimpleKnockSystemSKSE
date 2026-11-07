@@ -8,7 +8,7 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 * **failed** - built but crashed or malfunctioned; the number was reclaimed
 * **scratch** - a hypothesis-test build that never held a real number
 
-## 1.1.0 - 2026-11-07 - untested
+## 1.1.0 - 2026-11-07 - working
 
 ### Added
 - Persuade and Intimidate answer in their own voice lines, the game's generic speech-check answers: persuaded (Okay. Just this once. / How can I argue with that? / Okay, okay. You've talked me into it.), not persuaded (You expect me to believe that? / Nah. I don't think so. / That doesn't change anything.), intimidated (No need to get rough! / Whatever you say! / Don't hurt me! You win.), not intimidated (I don't have to take that from you! / I don't have to take this from the likes of you.). A voice type without these lines (a DLC or mod voice) still says the let-in or refusal line.
