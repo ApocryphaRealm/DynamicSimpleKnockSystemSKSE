@@ -6,8 +6,8 @@
 // location with a dungeon keyword, anybody there hostile to the player. Interior-to-interior doors are left alone on purpose:
 // the census shows they are mostly jarls' quarters, temple sanctums and vaults, and nobody knocks from inside the building.
 //
-// WHO ANSWERS (the owner, 2026-11-05). Only somebody in the destination cell right now: a living, enabled actor whose current
-// cell is that cell. Nobody there: "Nobody answers." The actors are read from the forms in memory, so while the cell is unloaded
+// WHO ANSWERS (the owner, 2026-11-05 and 2026-11-07). Only somebody in the destination cell right now: a living, enabled actor
+// whose current cell is that cell. Nobody there: no voice, no let-in, "No one's home. Come back later." The actors are read from the forms in memory, so while the cell is unloaded
 // only persistent actors can be seen, and where they are placed by the game while unloaded is what op=check reports.
 //
 // THE PROMPT AND THE PRESS. Virtual functions on the door form: GetActivateText for the words, Activate for the press, so the
@@ -348,15 +348,15 @@ namespace knock
 			return worldOrCell->As<RE::TESObjectCELL>();
 		}
 
-		// WHO MAY ANSWER (2026-11-06, after the first voiced test: nobody answered at the House of Clan Cruel-Sea, whose three
-		// persistent residents were held elsewhere by their schedules and whose fourth is not persistent, so not in memory).
-		// Every actor in memory is in the table - the process lists and the cells' persistent references hold no actor it
-		// lacks - so the search widens by rule, in order, and stops at the first that finds anybody:
+		// WHO MAY ANSWER. Only somebody inside the house now (the owner, 2026-11-05 and 2026-11-07: "you dont get a response if
+		// no one is home, you just get a message saying that no one's home, come back later"). 1.0.0 widened the search to
+		// residents placed there and to the owner or owning faction wherever the game held them, so a resident out in town
+		// answered and let the player in (Nexus report, 2026-11-07); that widening is gone. Every actor in memory is in the table,
+		// and the search takes, in order, stopping at the first that finds anybody:
 		//   1. in the cell now (the actor's current parent cell, else its save cell);
-		//   2. lives there (the actor's editor cell is that cell), wherever the game holds them now;
-		//   3. the owner: the owning NPC, or a member of the owning faction.
+		//   2. lives there (editor cell) and the game holds them in no cell at all, so nothing says they are out.
 		// Alive, enabled, not a mannequin; hostility is judged on whoever is found. A resident who is not persistent and
-		// whose cell is unloaded is not in memory at all, so cannot be found or speak.
+		// whose cell is unloaded is not in memory at all, so cannot be found: that door says nobody is home.
 		void FindResidents(Home& a_home)
 		{
 			BuildTable();
@@ -370,9 +370,17 @@ namespace knock
 				return !a_home.residents.empty();
 			};
 			if (pass("in the cell now", [&a_home](RE::Actor* a) { return CurrentCell(a) == a_home.cell; })) { return; }
-			if (pass("lives there (editor cell)", [&a_home](RE::Actor* a) { return EditorCell(a) == a_home.cell; })) { return; }
-			if (a_home.ownerNPC && pass("the owner", [&a_home](RE::Actor* a) { return a->GetActorBase() == a_home.ownerNPC; })) { return; }
-			if (a_home.ownerFaction) { pass("the owning faction", [&a_home](RE::Actor* a) { return a->IsInFaction(a_home.ownerFaction); }); }
+			pass("lives there, held in no cell", [&a_home](RE::Actor* a) { return !CurrentCell(a) && EditorCell(a) == a_home.cell; });
+		}
+
+		bool LivesThere(RE::TESObjectCELL* a_cell)
+		{
+			for (const auto id : g_actors)
+			{
+				auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
+				if (Eligible(actor) && EditorCell(actor) == a_cell) { return true; }
+			}
+			return false;
 		}
 
 		Verdict Classify(RE::TESObjectREFR* a_door, Home& a_home)
@@ -415,7 +423,10 @@ namespace knock
 
 			FindResidents(a_home);
 
-			if (!owner && a_home.residents.empty()) { return Verdict::kNotAHome; }
+			// Somebody's home even while they are out (the owner, 2026-11-07: "You should still be able to knock and have the
+			// option to lockpick or peek"): an owner, or a living actor placed in that cell. Out, the box still opens; a knock
+			// gets the no-one's-home message, and no conversation choice is offered.
+			if (!owner && a_home.residents.empty() && !LivesThere(a_home.cell)) { return Verdict::kNotAHome; }
 
 			if (ReactionToPlayer(a_home.ownerFaction) == RE::FIGHT_REACTION::kEnemy) { return Verdict::kHostile; }
 			for (auto* actor : a_home.residents)
@@ -669,6 +680,28 @@ namespace knock
 			if (cell) { cell->cellFlags.set(RE::TESObjectCELL::Flag::kPublicArea); }
 		}
 
+		// LEAVING FROM INSIDE (Nexus report, 2026-11-07: let in while the owner was out, the player had to pick the lock to get
+		// out). This mod never locks the inside door: EndLetIn locks only the outside door, and only once a load has finished
+		// with the player outside. The inside door is locked by the game itself - a resident's AI package locks the doors of
+		// their home as they leave or turn in - and 161 vanilla homes carry a lock record on the inside door. So while a let-in
+		// holds, any locked door of the let-in house that leads outside is unlocked in memory when the player looks at it or
+		// presses it: whoever let you in, you can always walk out.
+		bool UnlockWayOut(RE::TESObjectREFR* a_door)
+		{
+			if (!g_letIn.door || !a_door || !a_door->IsLocked()) { return false; }
+			auto* here = a_door->GetParentCell();
+			if (!here || here->GetFormID() != g_letIn.cell) { return false; }
+			const auto destPtr = a_door->extraList.GetTeleportLinkedDoor().get();
+			auto* dest = destPtr.get();
+			auto* outside = dest ? (dest->GetParentCell() ? dest->GetParentCell() : dest->GetSaveParentCell()) : nullptr;
+			if (!outside || outside->IsInteriorCell()) { return false; }
+			auto* lock = a_door->GetLock();
+			if (!lock) { return false; }
+			lock->SetLocked(false);
+			Event(std::format("way out: door {:08X} inside the let-in cell {:08X} was locked by the game; unlocked", a_door->GetFormID(), g_letIn.cell));
+			return true;
+		}
+
 		void EndLetIn(const char* a_why)
 		{
 			if (!g_letIn.door) { return; }
@@ -698,6 +731,14 @@ namespace knock
 		bool RefusalActive(RE::FormID a_door)
 		{
 			return g_refusal.door && g_refusal.door == a_door && (Now() - g_refusal.at) * 24.0F < static_cast<float>(settings::retryHours);
+		}
+
+		// The refusal box (Persuade, Intimidate) only while the one who refused is still inside: nobody home, no conversation.
+		bool RefuserHome(RE::FormID a_door, const Home& a_home)
+		{
+			if (!RefusalActive(a_door)) { return false; }
+			auto* speaker = RE::TESForm::LookupByID<RE::Actor>(g_refusal.speaker);
+			return speaker && std::find(a_home.residents.begin(), a_home.residents.end(), speaker) != a_home.residents.end();
 		}
 
 		bool CanPick(RE::TESObjectREFR* a_door) { return a_door && a_door->GetLockLevel() != RE::LOCK_LEVEL::kRequiresKey; }
@@ -844,7 +885,7 @@ namespace knock
 					auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(a_door);
 					if (!player || !door || player->GetParentCell() != door->GetParentCell() || player->GetPosition().GetDistance(door->GetPosition()) > 400.0F) { return; }
 					Home home;
-					if (Classify(door, home) == Verdict::kHome) { ShowRefusalBox(door, home); }
+					if (Classify(door, home) == Verdict::kHome && RefuserHome(a_door, home)) { ShowRefusalBox(door, home); }
 				});
 			}).detach();
 		}
@@ -878,8 +919,8 @@ namespace knock
 			if (!in.speaker)
 			{
 				++g_nobody;
-				Notify(strings::TR("DSK_NoAnswer", "Nobody answers."));
-				Event(std::format("{} on {:08X}: nobody found for cell {:08X} (not in it now, nobody placed there in memory, no owner in memory)", ActName(a_act), a_door->GetFormID(), a_home.cell->GetFormID()));
+				Notify(strings::TR("DSK_NoAnswer", "No one's home. Come back later."));
+				Event(std::format("{} on {:08X}: nobody home in cell {:08X} (no living resident in it now): no answer, no voice", ActName(a_act), a_door->GetFormID(), a_home.cell->GetFormID()));
 				return;
 			}
 			const auto v = Judge(in);
@@ -978,6 +1019,7 @@ namespace knock
 			{
 				if (a_ref && a_ref->GetBaseObject() == a_this)
 				{
+					UnlockWayOut(a_ref);
 					const auto id = a_ref->GetFormID();
 					Home home;
 					const auto verdict = Classify(a_ref, home);
@@ -999,11 +1041,12 @@ namespace knock
 
 			static bool Activate(RE::TESObjectDOOR* a_this, RE::TESObjectREFR* a_target, RE::TESObjectREFR* a_activator, std::uint8_t a_arg3, RE::TESBoundObject* a_object, std::int32_t a_count)
 			{
+				if (a_activator && a_activator->IsPlayerRef()) { UnlockWayOut(a_target); }
 				if (a_target && a_activator && a_activator->IsPlayerRef() && a_target->GetFormID() != g_passDoor && a_target->GetFormID() == g_promptDoor)
 				{
 					Home home;
 					if (Classify(a_target, home) == Verdict::kHome &&
-						(RefusalActive(a_target->GetFormID()) ? ShowRefusalBox(a_target, home) : ShowChoice(a_target, home)))
+						(RefuserHome(a_target->GetFormID(), home) ? ShowRefusalBox(a_target, home) : ShowChoice(a_target, home)))
 					{
 						return true;
 					}

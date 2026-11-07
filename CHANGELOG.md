@@ -13,6 +13,10 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 ### Added
 - Peek through the keyhole: with Take a Peek installed, the knock box (and the refusal box when there is room) offers its peek; without it the choice is not shown
 
+### Fixed
+- Locked in from the inside (Nexus report, 2026-11-07): while a let-in holds, a door of that house that leads outside and has been locked by the game (a resident's AI package locks their home as they leave or go to bed; 161 vanilla homes carry a lock on the inside door) is unlocked in memory when you look at it or press it, so you can always walk out without a lockpick. The mod itself never locked the inside door; the outside door still locks again once you are outside.
+- Nobody home, nobody answers (Nexus report, 2026-11-07): a resident out in town, at work or in another cell no longer answers and lets you in. Only a living, enabled resident inside the house now answers; the 1.0.0 widening to residents placed there and to the owner or owning faction wherever they were is gone. Nobody inside: the box still offers Knock, Pick the lock and Peek; a knock shows No one's home. Come back later. (eleven languages), with no spoken line, no let-in and no Persuade or Intimidate. A refusal box from earlier is shown only while the one who refused is still inside.
+
 ## 1.0.0 - 2026-11-06 - working
 
 ### Added
