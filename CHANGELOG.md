@@ -8,7 +8,7 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 * **failed** - built but crashed or malfunctioned; the number was reclaimed
 * **scratch** - a hypothesis-test build that never held a real number
 
-## 1.2.0 - 2026-11-08 - untested
+## 1.2.0 - 2026-11-08 - working
 
 ### Fixed
 - Knock is reachable on locked homes with a perk that adds its own activate choice to locked doors (Ordinator's Bypass Lock, reported on Nexus): the game's choice box comes first, and its default door activation now opens the knock box; the perk's own choice works as before.
