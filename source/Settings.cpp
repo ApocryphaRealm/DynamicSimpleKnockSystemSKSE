@@ -84,6 +84,8 @@ namespace settings
 					}
 					else if (section == "voice" && key == "sletintopic") { letInTopic = value; }
 					else if (section == "voice" && key == "srefusetopic") { refuseTopic = value; }
+					else if (section == "voice" && key == "ivoicevolume") { voiceVolume = std::clamp(std::stoi(value), 0, 100); }
+					else if (section == "sound" && key == "sknocksound") { knockSound = value; }
 				}
 				catch (...)
 				{
@@ -93,7 +95,7 @@ namespace settings
 			logger::info("settings read from {}: enabled={} day={}-{} exclusions={} logLevel={}", iniPath, enabled, dayStartHour, dayEndHour, exclusions.size(), logLevel);
 			logger::info("decision: friendRank={} knockSpeech={} persuadeSpeech={} night+{} asleep+{} bounty>={}:+{} thief>={}:+{} dislike+{}/rank intimidateMargin={} retryHours={}",
 				friendRank, knockSpeech, persuadeSpeech, nightPenalty, asleepPenalty, bountyGold, bountyPenalty, thiefGold, thiefPenalty, dislikePenalty, intimidateMargin, retryHours);
-			logger::info("voice: let in {}, refuse {}", letInTopic, refuseTopic);
+			logger::info("voice: let in {}, refuse {}, volume {}%; knock sound {}", letInTopic, refuseTopic, voiceVolume, knockSound.empty() ? "none" : knockSound);
 			return true;
 		}
 
@@ -171,6 +173,7 @@ namespace settings
 		WriteKey(lines, "Decision", "iDislikePenalty", std::to_string(dislikePenalty));
 		WriteKey(lines, "Decision", "iIntimidateMargin", std::to_string(intimidateMargin));
 		WriteKey(lines, "Decision", "iRetryHours", std::to_string(retryHours));
+		WriteKey(lines, "Voice", "iVoiceVolume", std::to_string(voiceVolume));
 		WriteKey(lines, "Debug", "uLogLevel", std::to_string(logLevel));
 
 		std::ofstream out(iniPath, std::ios::trunc);

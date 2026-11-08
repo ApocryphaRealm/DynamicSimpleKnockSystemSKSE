@@ -30,6 +30,10 @@ namespace settings
 	// [Voice] - the vanilla topics spoken in the resident's voice. "Plugin|0xID". Not on the page, by design.
 	inline std::string letInTopic = "Skyrim.esm|0x039C2A";    // DialogueGeneric, subtype Trespass Against NPC: "I'll let you stay. This time."
 	inline std::string refuseTopic = "Skyrim.esm|0x06AEA2";   // DialogueGeneric, subtype Time To Go: "You need to leave."
+	inline int voiceVolume = 100;         // iVoiceVolume:Voice - 0 to 100, how loud the answer through the door is, in percent of the game's own loudness. On the page.
+
+	// [Sound] - the knock itself, a vanilla sound descriptor "Plugin|0xID" played at the door on Knock; empty = no sound. Not on the page.
+	inline std::string knockSound = "Skyrim.esm|0x10080A";   // DRSStoneLabyrinthianKnock, Sound\FX\DRS\Labyrinthian\DRS_Stone_Labyrinthian_Knock.wav
 
 	// [Exclusions] - every value of the section: "Plugin.esp|0x123456" or an editor ID. Not on the page, by design.
 	inline std::vector<std::string> exclusions;

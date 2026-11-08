@@ -211,6 +211,10 @@ namespace UI
 		IntSlider(strings::TR("DSK_RetryHours", "Hours before a new try"), &settings::retryHours, 0, 72, "DSK_HelpRetryHours",
 			"Game hours after a refusal before a knock starts over, with Persuade and Intimidate offered again.");
 
+		ImGuiMCP::SeparatorText(strings::TR("DSK_Sound", "Sound"));
+		IntSlider(strings::TR("DSK_VoiceVolume", "Answer volume"), &settings::voiceVolume, 0, 100, "DSK_HelpVoiceVolume",
+			"How loud the answer through the door is, in percent of the game's own loudness. 100: as the game plays it.");
+
 		ImGuiMCP::PopItemWidth();
 		ImGuiMCP::Spacing();
 

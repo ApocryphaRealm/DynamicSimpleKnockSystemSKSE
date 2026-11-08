@@ -15,6 +15,11 @@
 // shows a choice: Knock, Pick the lock, Leave. A lock is only ever picked because the player chose it, so a refusal can never
 // fall through to the lockpicking path, and another mod's automatic picking (with its crime) cannot follow a second press.
 //
+// PERK CHOICES (1.2.0). A perk that adds an activate choice to locked doors (Ordinator's Bypass Lock) makes the press show
+// the engine's choice box first; its default activation reaches the Activate hook while that box answers for the door, and
+// the knock box follows. See ActivateChoiceHooks. The knock plays a vanilla sound at the door ([Sound]); the answer's
+// loudness is [Voice] iVoiceVolume (ApplyVoiceVolume).
+//
 // SIMPLE ACTIVATE. po3's Simple Activate rewrites the HUD text after this hook: with Hide Text on doors it drops the first line
 // and colours the name line of a crime door. Its source is public (powerof3/SimpleActivateSKSE). While it is loaded the prompt
 // is one line, "Knock: name", which it neither shortens nor colours; otherwise two lines, as the game writes them.
@@ -220,7 +225,21 @@ namespace knock
 		RE::FormID g_choiceDoor = 0;    // the door the choice box is open for
 		std::vector<Act> g_buttons;     // what each button of the open box does
 		RE::FormID g_passDoor = 0;      // the next Activate on this door goes to the game untouched
+		RE::FormID g_choiceRunDoor = 0; // the door a perk's activate-choice box is answering for, while it answers (ActivateChoiceHooks)
 		bool g_simpleActivate = false;
+		RE::BGSSoundDescriptorForm* g_knockSound = nullptr;   // [Sound] sKnockSound
+
+		// [Voice] iVoiceVolume below 100: the next spoken line's sound on the door (or on the one speaking) is turned down
+		// once it exists, which is a frame or more after Say is sent. `before` is the sound that was there when Say was sent.
+		struct VoiceVolume
+		{
+			RE::FormID door{ 0 };
+			RE::FormID speaker{ 0 };
+			std::uint32_t before{ static_cast<std::uint32_t>(-1) };
+			std::chrono::steady_clock::time_point until{};
+		};
+		VoiceVolume g_voiceVolume;
+		std::uint32_t g_knockSounds = 0, g_voiceVolumeSet = 0, g_voiceVolumeMissed = 0, g_perkChoiceRuns = 0, g_perkDefaultKnock = 0;
 		LetIn g_letIn;
 		Refusal g_refusal;
 		Overrides g_over;
@@ -764,6 +783,12 @@ namespace knock
 			const bool sent = vm->DispatchMethodCall(object, RE::BSFixedString("Say"), args, callback);
 			if (sent) { ++g_says; }
 			else { ++g_sayFailed; }
+			if (sent && settings::voiceVolume < 100)
+			{
+				auto* say = a_door->extraList.GetByType<RE::ExtraSayToTopicInfo>();
+				g_voiceVolume = { a_door->GetFormID(), a_speaker->GetFormID(), say ? say->sound.soundID : static_cast<std::uint32_t>(-1),
+					std::chrono::steady_clock::now() + std::chrono::seconds(5) };
+			}
 			logger::info("Say ({}): topic {:08X}{} at door {:08X} as {:08X} ({}) {}", a_what, a_topic->GetFormID(),
 				a_topic->numTopicInfos == 1 && a_topic->topicInfos[0] ? std::format(" info {:08X}", a_topic->topicInfos[0]->GetFormID()) : std::string(),
 				a_door->GetFormID(), a_speaker->GetFormID(), loaded ? "speaker loaded" : "speaker not loaded", sent ? "sent" : "REFUSED by the VM");
@@ -870,12 +895,42 @@ namespace knock
 			}
 		}
 
+		// VOICE VOLUME (the owner, 2026-11-08). ObjectReference.Say returns no sound handle; the game keeps the spoken line's
+		// sound in the speaking reference's ExtraSayToTopicInfo (CommonLibSSE-NG: BSSoundHandle sound at 0x28). Each frame
+		// after a Say, until a new sound shows up there (on the door, else on the one speaking as) or 5 seconds pass, that
+		// handle gets BSSoundHandle::SetVolume(iVoiceVolume / 100). At 100 nothing is touched: the game's own loudness.
+		void ApplyVoiceVolume()
+		{
+			if (!g_voiceVolume.door) { return; }
+			for (const RE::FormID id : { g_voiceVolume.door, g_voiceVolume.speaker })
+			{
+				auto* ref = id ? RE::TESForm::LookupByID<RE::TESObjectREFR>(id) : nullptr;
+				auto* say = ref ? ref->extraList.GetByType<RE::ExtraSayToTopicInfo>() : nullptr;
+				if (!say || !say->sound.IsValid() || (id == g_voiceVolume.door && say->sound.soundID == g_voiceVolume.before)) { continue; }
+				const float volume = static_cast<float>(settings::voiceVolume) / 100.0F;
+				const bool set = say->sound.SetVolume(volume);
+				if (set) { ++g_voiceVolumeSet; }
+				Event(std::format("voice volume {}% on the spoken line's sound {:08X} of {:08X} ({}): {}", settings::voiceVolume, say->sound.soundID, id,
+					id == g_voiceVolume.door ? "the door" : "the one speaking", set ? "set" : "REFUSED by the sound"));
+				g_voiceVolume = {};
+				return;
+			}
+			if (std::chrono::steady_clock::now() > g_voiceVolume.until)
+			{
+				++g_voiceVolumeMissed;
+				Event(std::format("voice volume {}%: no spoken line's sound appeared on door {:08X} or speaker {:08X} within 5 s; the line played at full loudness",
+					settings::voiceVolume, g_voiceVolume.door, g_voiceVolume.speaker));
+				g_voiceVolume = {};
+			}
+		}
+
 		struct PlayerHooks
 		{
 			static void Update(RE::PlayerCharacter* a_this, float a_delta)
 			{
 				_Update(a_this, a_delta);
 				ClearTrespassing(a_this);
+				ApplyVoiceVolume();
 			}
 			static inline REL::Relocation<decltype(Update)> _Update;
 		};
@@ -1208,10 +1263,37 @@ namespace knock
 			ScheduleRefusalBox(a_door->GetFormID());
 		}
 
+		// THE KNOCK SOUND (the owner, 2026-11-08). Vanilla has no wood-door knock; the one knock-on-a-door sound descriptor in
+		// Skyrim.esm is DRSStoneLabyrinthianKnock 10080A (found by script, 2026-11-08), set in [Sound] sKnockSound. Played at
+		// the door and following it, once per Knock, whoever is home.
+		void PlayKnock(RE::TESObjectREFR* a_door)
+		{
+			if (!g_knockSound || !a_door) { return; }
+			auto* audio = RE::BSAudioManager::GetSingleton();
+			if (!audio) { return; }
+			RE::BSSoundHandle handle;
+#if RUNTIME_LINE == 17
+			const bool built = audio->GetSoundHandle(handle, g_knockSound);
+#else
+			const bool built = audio->BuildSoundDataFromDescriptor(handle, g_knockSound);
+#endif
+			if (!built || !handle.IsValid())
+			{
+				logger::warn("knock sound {:08X}: the audio manager built no sound", g_knockSound->GetFormID());
+				return;
+			}
+			handle.SetPosition(a_door->GetPosition());
+			if (auto* node = a_door->Get3D()) { handle.SetObjectToFollow(node); }
+			const bool played = handle.Play();
+			if (played) { ++g_knockSounds; }
+			logger::info("knock sound {:08X} at door {:08X}: {}", g_knockSound->GetFormID(), a_door->GetFormID(), played ? "playing" : "NOT played");
+		}
+
 		// Knock, Persuade or Intimidate on a door the rule has called a home. Nothing here opens the door by itself: a let-in
 		// unlocks it and the player's next press goes through it.
 		void Attempt(RE::TESObjectREFR* a_door, const Home& a_home, Act a_act)
 		{
+			if (a_act == Act::kKnock) { PlayKnock(a_door); }
 			const auto in = Gather(a_home);
 			if (!in.speaker)
 			{
@@ -1333,18 +1415,41 @@ namespace knock
 					}
 					if (g_promptDoor == id) { g_promptDoor = 0; }
 				}
+				// The other caller (CommonLibSSE-NG's name for this argument is a_activator): asked with the player while the HUD
+				// shows Knock on a reference of this door, the answer is the one word, so a box that labels the door's own
+				// activation with it (a perk's activate-choice box, see ActivateChoiceHooks) says Knock. Logged to find out.
+				if (a_ref && a_ref->IsPlayerRef() && g_promptDoor)
+				{
+					auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(g_promptDoor);
+					Home home;
+					if (door && door->GetBaseObject() == a_this && Classify(door, home) == Verdict::kHome)
+					{
+						logger::info("GetActivateText on door form {:08X} asked with the player while {:08X} shows Knock: answered Knock", a_this->GetFormID(), g_promptDoor);
+						a_dst = strings::TR("DSK_Knock", "Knock");
+						return true;
+					}
+				}
 				return _GetActivateText(a_this, a_ref, a_dst);
 			}
 
+			// The player's press. Through the HUD's prompt (g_promptDoor), or through the default activation of a perk's
+			// activate-choice box answered for this door (g_choiceRunDoor: Ordinator's Bypass Lock and the like add a choice
+			// on locked doors, and the engine then asks the player before the door's own Activate runs).
 			static bool Activate(RE::TESObjectDOOR* a_this, RE::TESObjectREFR* a_target, RE::TESObjectREFR* a_activator, std::uint8_t a_arg3, RE::TESBoundObject* a_object, std::int32_t a_count)
 			{
 				if (a_activator && a_activator->IsPlayerRef()) { UnlockWayOut(a_target); }
-				if (a_target && a_activator && a_activator->IsPlayerRef() && a_target->GetFormID() != g_passDoor && a_target->GetFormID() == g_promptDoor)
+				const RE::FormID id = a_target ? a_target->GetFormID() : 0;
+				if (a_target && a_activator && a_activator->IsPlayerRef() && id != g_passDoor && (id == g_promptDoor || id == g_choiceRunDoor))
 				{
 					Home home;
 					if (Classify(a_target, home) == Verdict::kHome &&
-						(RefuserHome(a_target->GetFormID(), home) ? ShowRefusalBox(a_target, home) : ShowChoice(a_target, home)))
+						(RefuserHome(id, home) ? ShowRefusalBox(a_target, home) : ShowChoice(a_target, home)))
 					{
+						if (id == g_choiceRunDoor)
+						{
+							++g_perkDefaultKnock;
+							Event(std::format("the perk choice box's own activation of {:08X} opened the knock box", id));
+						}
 						return true;
 					}
 				}
@@ -1353,6 +1458,33 @@ namespace knock
 
 			static inline REL::Relocation<decltype(GetActivateText)> _GetActivateText;
 			static inline REL::Relocation<decltype(Activate)> _Activate;
+		};
+
+		// PERK ACTIVATE CHOICES (Nexus report 2026-11-08: no Knock with Ordinator's Bypass Lock). Ordinator 9.35.0 overrides
+		// Skyrim.esm PERK 058209 (Unbreakable, renamed Seen This Before) with an Activate entry point (14), function Add
+		// Activate Choice (9), label "Bypass Lock", flags 0 (neither Run Immediately nor Replace Default), on a target that is
+		// GetLocked == 1 and GetLockLevel <= 75 - so every locked, pickable door (read from the plugin, 2026-11-08). With
+		// such a choice the player's press first shows the engine's choice box, answered by an ActivateChoiceMenuCallbackFunctor
+		// (vtable slot 1, Run(button); the reference's handle at +0x10). Its default activation then runs the door's own
+		// Activate. While the box answers for a door, that door is g_choiceRunDoor, so Activate shows the knock box for it as
+		// for a press through the HUD; the perk's own choices run untouched, here and on every other door.
+		struct ActivateChoiceHooks
+		{
+			static void Run(RE::IMessageBoxCallback* a_this, std::uint8_t a_button)
+			{
+				const auto base = reinterpret_cast<std::uintptr_t>(a_this);
+				const auto handle = *reinterpret_cast<RE::ObjectRefHandle*>(base + 0x10);
+				const auto extra = *reinterpret_cast<std::uint32_t*>(base + 0x14);
+				const auto ref = handle.get();
+				const RE::FormID id = ref ? ref->GetFormID() : 0;
+				++g_perkChoiceRuns;
+				Event(std::format("perk activate-choice box answered: button {} for {:08X} (+0x14 = {})", a_button, id, extra));
+				const RE::FormID before = g_choiceRunDoor;
+				g_choiceRunDoor = id;
+				_Run(a_this, a_button);
+				g_choiceRunDoor = before;
+			}
+			static inline REL::Relocation<decltype(Run)> _Run;
 		};
 
 		struct Sinks :
@@ -1399,6 +1531,10 @@ namespace knock
 		DoorHooks::_Activate = vtable.write_vfunc(0x37, DoorHooks::Activate);
 		DoorHooks::_GetActivateText = vtable.write_vfunc(0x4C, DoorHooks::GetActivateText);
 		logger::info("door hooks: Activate (slot 0x37) was at {:X}, GetActivateText (slot 0x4C) was at {:X}", DoorHooks::_Activate.address(), DoorHooks::_GetActivateText.address());
+
+		REL::Relocation<std::uintptr_t> choice{ RE::VTABLE___ActivateChoiceMenuCallbackFunctor[0] };
+		ActivateChoiceHooks::_Run = choice.write_vfunc(0x1, ActivateChoiceHooks::Run);
+		logger::info("perk activate-choice box hook: Run (slot 1) was at {:X}", ActivateChoiceHooks::_Run.address());
 
 		REL::Relocation<std::uintptr_t> character{ RE::VTABLE_Character[0] };
 		TrespassHooks::_Character = character.write_vfunc(0xD7, TrespassHooks::Character);
@@ -1471,6 +1607,20 @@ namespace knock
 		g_letInTopic = topic(settings::letInTopic, "let in");
 		g_refuseTopic = topic(settings::refuseTopic, "refuse");
 
+		// The knock sound, "Plugin|0xID" of a sound descriptor; empty = none.
+		g_knockSound = nullptr;
+		if (const auto& s = settings::knockSound; !s.empty())
+		{
+			const auto bar = s.find('|');
+			RE::FormID id = 0;
+			try { id = bar == std::string::npos ? 0 : static_cast<RE::FormID>(std::stoul(s.substr(bar + 1), nullptr, 16)); }
+			catch (...) { id = 0; }
+			g_knockSound = (dh && id) ? dh->LookupForm<RE::BGSSoundDescriptorForm>(id & 0x00FFFFFF, s.substr(0, bar)) : nullptr;
+			if (g_knockSound) { logger::info("[Sound] knock: sound descriptor {:08X}", g_knockSound->GetFormID()); }
+			else { logger::warn("[Sound] knock \"{}\" is not a sound descriptor in this load order; no knock sound", s); }
+		}
+		else { logger::info("[Sound] knock: none"); }
+
 		// The get-out nag topics: every Time To Go, Trespass and Trespass Against NPC topic in the load order.
 		UnmuteNags("settings read");
 		g_nagTopics.clear();
@@ -1520,6 +1670,8 @@ namespace knock
 		g_choiceDoor = 0;
 		g_buttons.clear();
 		g_passDoor = 0;
+		g_choiceRunDoor = 0;
+		g_voiceVolume = {};
 		g_refusal = {};
 		g_over = {};
 	}
@@ -1583,14 +1735,15 @@ namespace knock
 			"\"topics\":{{\"letIn\":\"{:08X}\",\"refuse\":\"{:08X}\"}},\"settings\":{},\"overrides\":{},\"lastDecision\":{},"
 			"\"table\":{{\"built\":{},\"actors\":{},\"ms\":{}}},"
 			"\"exclusions\":{{\"forms\":{},\"editorIDs\":{},\"unresolved\":{}}},"
-			"\"counts\":{{\"prompts\":{},\"knocks\":{},\"letIn\":{},\"nobody\":{},\"refused\":{},\"persuaded\":{},\"notPersuaded\":{},\"intimidated\":{},\"notIntimidated\":{},\"says\":{},\"sayFailed\":{},\"trespassBlocked\":{},\"nagMutes\":{},\"nagLeaks\":{},\"nagsMutedNow\":{},\"trespassFlagCleared\":{}}},\"events\":[{}]}}",
+			"\"counts\":{{\"prompts\":{},\"knocks\":{},\"letIn\":{},\"nobody\":{},\"refused\":{},\"persuaded\":{},\"notPersuaded\":{},\"intimidated\":{},\"notIntimidated\":{},\"says\":{},\"sayFailed\":{},\"trespassBlocked\":{},\"nagMutes\":{},\"nagLeaks\":{},\"nagsMutedNow\":{},\"trespassFlagCleared\":{},\"knockSounds\":{},\"voiceVolumeSet\":{},\"voiceVolumeMissed\":{},\"perkChoiceRuns\":{},\"perkDefaultKnock\":{}}},\"voiceVolume\":{},\"knockSound\":\"{:08X}\",\"events\":[{}]}}",
 			settings::enabled, settings::dayStartHour, settings::dayEndHour, calendar ? calendar->GetHour() : -1.0F, IsDay(), g_simpleActivate, g_promptDoor, g_choiceDoor, g_buttons.size(),
 			g_letIn.door, g_letIn.cell, g_letIn.cellWasPublic,
 			g_refusal.door, g_refusal.speaker, RefusalActive(g_refusal.door), g_refusal.triedPersuade, g_refusal.triedIntimidate,
 			g_letInTopic ? g_letInTopic->GetFormID() : 0, g_refuseTopic ? g_refuseTopic->GetFormID() : 0, decision, overrides, g_lastDecision,
 			g_tableBuilt, g_tableActors, g_tableMs,
 			g_excludedIDs.size(), g_excludedEditorIDs.size(), g_excludedUnresolved,
-			g_promptsShown, g_knocks, g_letIns, g_nobody, g_refused, g_persuaded, g_notPersuaded, g_intimidated, g_notIntimidated, g_says, g_sayFailed, g_trespassBlocked, g_nagMutes, g_nagLeaks, !g_muted.empty(), g_trespassFlagCleared, events);
+			g_promptsShown, g_knocks, g_letIns, g_nobody, g_refused, g_persuaded, g_notPersuaded, g_intimidated, g_notIntimidated, g_says, g_sayFailed, g_trespassBlocked, g_nagMutes, g_nagLeaks, !g_muted.empty(), g_trespassFlagCleared,
+			g_knockSounds, g_voiceVolumeSet, g_voiceVolumeMissed, g_perkChoiceRuns, g_perkDefaultKnock, settings::voiceVolume, g_knockSound ? g_knockSound->GetFormID() : 0, events);
 	}
 
 	std::string CheckJson(std::uint32_t a_refID)

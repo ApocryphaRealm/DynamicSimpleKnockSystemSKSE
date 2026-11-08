@@ -8,6 +8,15 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 * **failed** - built but crashed or malfunctioned; the number was reclaimed
 * **scratch** - a hypothesis-test build that never held a real number
 
+## 1.2.0 - 2026-11-08 - untested
+
+### Fixed
+- Knock is reachable on locked homes with a perk that adds its own activate choice to locked doors (Ordinator's Bypass Lock, reported on Nexus): the game's choice box comes first, and its default door activation now opens the knock box; the perk's own choice works as before.
+
+### Added
+- Answer volume: [Voice] iVoiceVolume (0 to 100, default 100 = the game's own loudness) turns the resident's spoken answer down; also a slider on the settings page, in all eleven languages.
+- A knock sound at the door when you knock: Skyrim.esm's door-knock sound descriptor (DRSStoneLabyrinthianKnock), set in the INI under [Sound] sKnockSound (empty for none).
+
 ## 1.1.0 - 2026-11-07 - working
 
 ### Added
