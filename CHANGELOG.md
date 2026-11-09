@@ -8,7 +8,7 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 * **failed** - built but crashed or malfunctioned; the number was reclaimed
 * **scratch** - a hypothesis-test build that never held a real number
 
-## 1.3.0 - 2026-11-09 - untested
+## 1.3.0 - 2026-11-09 - working
 
 ### Added
 - Sharp only: the end of the Labyrinthian door knock, its two sharp knocks without the 1.1 s of stone grinding before them, as the mod's own loose sound file (Sound\FX\DynamicSimpleKnock\DSK_Knock_Sharp.wav, cut from the game's file 5 ms before its first knock with a 5 ms fade-in), played by file path. No plugin.
