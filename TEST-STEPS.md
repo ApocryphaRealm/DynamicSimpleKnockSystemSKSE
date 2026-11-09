@@ -43,3 +43,5 @@ On a wooden house door in Whiterun, as a stranger by day (so the answer is short
 2. **Sharp only (1).** Two sharp knocks, no stone grinding first. Log at load: `[Sound] path form ... MATCH` on one line and `[Sound] sharp knock: file ...`; on the knock `knock sound (sharp only, file ...) ...: playing`.
 3. **Full (2).** The old 1.2.0 sound, grinding included.
 4. **Off (0).** No knock sound; the answer still comes.
+
+Answer timing (1.3.0, order 3): the answer comes after the knock finishes - wood 5.9 s (last knock 5.15 s + 0.75 s), sharp only and full at the end of the sound ("the audio manager reports X s" in the log), off at once. Walking away or interrupting the wood knock cancels the answer ("answer cancelled" / "and the answer with them"); a second Knock while waiting logs "ignored: still knocking".

@@ -16,6 +16,7 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 - Knock sound setting: [Sound] iKnockSound and a Knock sound slider on the settings page, in all eleven languages: wood / sharp only / full / off, default wood.
 
 ### Changed
+- The answer to a knock waits for the knock to finish: in wood mode until the last knock plus a short beat (5.9 s), in sharp only and full until the sound ends; off answers at once. Walking away from the door (or interrupting the wood knock) cancels the answer, and a knock pressed while one is still sounding is ignored.
 - The knock no longer sounds like kicking a huge metal door on a wooden house door (reported on Nexus): the default is now the wood knock; the old sound is still there as full.
 
 ## 1.2.0 - 2026-11-08 - working

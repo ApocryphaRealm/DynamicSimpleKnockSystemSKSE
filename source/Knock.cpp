@@ -931,8 +931,23 @@ namespace knock
 			}
 		}
 
-		// Plays a sound descriptor at the door, following it. `a_what` names it in the log.
-		bool PlayDescriptorAt(RE::TESObjectREFR* a_door, RE::BGSSoundDescriptorForm* a_sound, const std::string& a_what)
+		// THE ANSWER WAITS FOR THE KNOCK (Main Agent's order 3, 2026-11-09). A Knock's answer (let in, refused, nobody home) comes
+		// when the knock has finished: wood after the last knock (5150 ms) plus a 750 ms beat, sharp only and full at the end of
+		// the sound that plays, off at once. Cancelled with the wood knocks, and when the player leaves the door's cell or goes
+		// more than 400 units from it. A Knock pressed while an answer is pending is ignored.
+		constexpr float kAnswerBeatSeconds = 0.750F;
+		struct PendingAnswer
+		{
+			RE::FormID door{ 0 };
+			float wait{ 0.0F };
+			float elapsed{ 0.0F };
+		};
+		std::optional<PendingAnswer> g_answer;
+		void TickPendingAnswer(RE::PlayerCharacter* a_player, float a_delta);   // defined after Attempt
+
+		// Plays a sound descriptor at the door, following it. `a_what` names it in the log. `a_seconds` gets the sound's length
+		// as the audio manager reports it (0 when it reports none).
+		bool PlayDescriptorAt(RE::TESObjectREFR* a_door, RE::BGSSoundDescriptorForm* a_sound, const std::string& a_what, float* a_seconds = nullptr)
 		{
 			auto* audio = RE::BSAudioManager::GetSingleton();
 			if (!audio || !a_door || !a_sound) { return false; }
@@ -951,6 +966,7 @@ namespace knock
 			if (auto* node = a_door->Get3D()) { handle.SetObjectToFollow(node); }
 			const bool played = handle.Play();
 			if (played) { ++g_knockSounds; }
+			if (a_seconds) { *a_seconds = static_cast<float>(handle.GetDuration()) / 1000.0F; }
 			Event(std::format("knock sound ({}) at door {:08X}: {}", a_what, a_door->GetFormID(), played ? "playing" : "NOT played"));
 			return played;
 		}
@@ -1006,8 +1022,10 @@ namespace knock
 			}
 			if (why)
 			{
-				Event(std::format("wood knock on {:08X}: interrupted ({}) after {} of 5 knocks; the rest cancelled", w.door, why, w.next));
+				Event(std::format("wood knock on {:08X}: interrupted ({}) after {} of 5 knocks; the rest cancelled{}", w.door, why, w.next,
+					g_answer ? ", and the answer with them" : ""));
 				g_wood.reset();
+				g_answer.reset();
 				return;
 			}
 			w.elapsed += a_delta;
@@ -1028,6 +1046,7 @@ namespace knock
 				ClearTrespassing(a_this);
 				ApplyVoiceVolume();
 				TickWoodKnock(a_this, a_delta);
+				TickPendingAnswer(a_this, a_delta);
 			}
 			static inline REL::Relocation<decltype(Update)> _Update;
 		};
@@ -1367,26 +1386,37 @@ namespace knock
 		// knock (1.0994 s, found by waveform analysis) with a 5 ms fade-in, played by file path, no plugin; 2 full = the
 		// vanilla descriptor in sKnockSound. CommonLibSSE-NG's BSSoundHandle has no seek or start offset, so the cut is a file.
 		// Played at the door and following it, once per Knock, whoever is home.
-		void PlayKnock(RE::TESObjectREFR* a_door)
+		// The length the audio manager reports for a sound, or `a_known` (the file's own length, measured 2026-11-09) when it
+		// reports nothing usable.
+		float SoundSeconds(float a_reported, float a_known, const char* a_what)
 		{
-			if (!a_door || settings::knockSoundMode == settings::kKnockOff) { return; }
+			const bool usable = a_reported >= 0.1F && a_reported <= 30.0F;
+			logger::info("knock sound ({}): the audio manager reports {:.3f} s{}", a_what, a_reported, usable ? "" : std::format("; using the file's {:.3f} s", a_known));
+			return usable ? a_reported : a_known;
+		}
+
+		// Plays the knock in the chosen mode; returns how long the answer waits, in seconds (0 = answer at once).
+		float PlayKnock(RE::TESObjectREFR* a_door)
+		{
+			if (!a_door || settings::knockSoundMode == settings::kKnockOff) { return 0.0F; }
 			if (settings::knockSoundMode == settings::kKnockWood)
 			{
 				StartWoodKnock(a_door);
-				return;
+				return g_wood ? kWoodKnockSeconds.back() + kAnswerBeatSeconds : 0.0F;
 			}
 			if (settings::knockSoundMode == settings::kKnockFull)
 			{
-				if (g_knockSound) { PlayDescriptorAt(a_door, g_knockSound, std::format("full, descriptor {:08X}", g_knockSound->GetFormID())); }
-				return;
+				float seconds = 0.0F;
+				if (!g_knockSound || !PlayDescriptorAt(a_door, g_knockSound, std::format("full, descriptor {:08X}", g_knockSound->GetFormID()), &seconds)) { return 0.0F; }
+				return SoundSeconds(seconds, 4.640F, "full");   // DRS_Stone_Labyrinthian_Knock.wav is 4.640 s
 			}
 			auto* audio = RE::BSAudioManager::GetSingleton();
-			if (!audio) { return; }
+			if (!audio) { return 0.0F; }
 			RE::BSSoundHandle handle;
 			bool built = false;
 			std::string what;
 			{
-				if (!g_sharpReady) { return; }
+				if (!g_sharpReady) { return 0.0F; }
 				constexpr std::uint32_t kFlags = 0x1A;     // the flags the descriptor path defaults to
 				constexpr std::uint32_t kPriority = 128;   // a sound descriptor's default priority
 #if RUNTIME_LINE == 17
@@ -1400,13 +1430,15 @@ namespace knock
 			if (!built || !handle.IsValid())
 			{
 				logger::warn("knock sound ({}): the audio manager built no sound", what);
-				return;
+				return 0.0F;
 			}
 			handle.SetPosition(a_door->GetPosition());
 			if (auto* node = a_door->Get3D()) { handle.SetObjectToFollow(node); }
 			const bool played = handle.Play();
 			if (played) { ++g_knockSounds; }
 			Event(std::format("knock sound ({}) at door {:08X}: {}", what, a_door->GetFormID(), played ? "playing" : "NOT played"));
+			if (!played) { return 0.0F; }
+			return SoundSeconds(static_cast<float>(handle.GetDuration()) / 1000.0F, 3.539F, "sharp only");   // DSK_Knock_Sharp.wav is 3.539 s
 		}
 
 		// Which path form BSResource::ID::GenerateFromPath wants for a sound file is not documented, so it is read from the game:
@@ -1463,9 +1495,8 @@ namespace knock
 
 		// Knock, Persuade or Intimidate on a door the rule has called a home. Nothing here opens the door by itself: a let-in
 		// unlocks it and the player's next press goes through it.
-		void Attempt(RE::TESObjectREFR* a_door, const Home& a_home, Act a_act)
+		void Answer(RE::TESObjectREFR* a_door, const Home& a_home, Act a_act)
 		{
-			if (a_act == Act::kKnock) { PlayKnock(a_door); }
 			const auto in = Gather(a_home);
 			if (!in.speaker)
 			{
@@ -1510,6 +1541,51 @@ namespace knock
 			}
 			if (persuade) { ++g_notPersuaded; RefuseNow(a_door, in, "DSK_MsgNotPersuaded", "{name} is not persuaded.", "persuade", Speech::kNotPersuaded); }
 			else { ++g_notIntimidated; RefuseNow(a_door, in, "DSK_MsgNotIntimidated", "{name} is not afraid of you.", "intimidate", Speech::kNotIntimidated); }
+		}
+
+		void Attempt(RE::TESObjectREFR* a_door, const Home& a_home, Act a_act)
+		{
+			if (a_act == Act::kKnock)
+			{
+				if (g_answer)
+				{
+					Event(std::format("knock on {:08X} ignored: still knocking on {:08X}, its answer is pending", a_door->GetFormID(), g_answer->door));
+					return;
+				}
+				const float wait = PlayKnock(a_door);
+				if (wait > 0.0F)
+				{
+					g_answer = PendingAnswer{ a_door->GetFormID(), wait, 0.0F };
+					Event(std::format("knock on {:08X}: the answer comes in {:.2f} s, when the knock has finished", a_door->GetFormID(), wait));
+					return;
+				}
+			}
+			Answer(a_door, a_home, a_act);
+		}
+
+		void TickPendingAnswer(RE::PlayerCharacter* a_player, float a_delta)
+		{
+			if (!g_answer || !a_player) { return; }
+			auto& p = *g_answer;
+			auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(p.door);
+			if (!door || a_player->GetParentCell() != door->GetParentCell() || a_player->GetPosition().GetDistance(door->GetPosition()) > 400.0F)
+			{
+				Event(std::format("knock on {:08X}: the player left before the answer; answer cancelled", p.door));
+				g_answer.reset();
+				return;
+			}
+			p.elapsed += a_delta;
+			if (p.elapsed < p.wait) { return; }
+			g_answer.reset();
+			g_tableBuilt = false;   // who is in memory at this moment
+			Home home;
+			const auto verdict = Classify(door, home);
+			if (verdict != Verdict::kHome)
+			{
+				Event(std::format("knock on {:08X}: answer dropped: {}", door->GetFormID(), Name(verdict)));
+				return;
+			}
+			Answer(door, home, Act::kKnock);
 		}
 
 		// Runs the game's own Activate on the door, past our hook: the game's lock path runs.
@@ -1797,6 +1873,7 @@ namespace knock
 		g_doorBangIdle = dh ? dh->LookupForm<RE::TESIdleForm>(0x0ABEF2, "Skyrim.esm") : nullptr;
 		logger::info("[Sound] wood knock: sound FSTPlayerWoodBarefootSprintL {}, idle IdleMT_DoorBang {}", g_woodSound ? "found" : "MISSING", g_doorBangIdle ? "found" : "MISSING");
 		g_wood.reset();
+		g_answer.reset();
 
 		// The get-out nag topics: every Time To Go, Trespass and Trespass Against NPC topic in the load order.
 		UnmuteNags("settings read");
