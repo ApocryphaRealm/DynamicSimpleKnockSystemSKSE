@@ -34,3 +34,12 @@ From the survey's plugin scan of 276 locked lived-in doors, with faction reactio
 The 11 that do not: 4 the player's own, 2 on the exclusion list (Goldenglow, Thalmor Embassy), 5 hostile by the plugin data (Black-Briar Lodge's 4 doors through its mod-added housekeeper's faction, Gautierre Manor through a guard's aggression). In game the actor is asked, so these 5 may differ.
 
 Of the 81 other locked exterior doors: 39 dungeon keyword, 11 exclusion list, 9 the player's own, 4 hostile, 17 not a home, 1 qualifies (the Aretino Residence, no owner, Aventus placed there).
+
+## 1.3.0 - the knock sound modes
+
+On a wooden house door in Whiterun, as a stranger by day (so the answer is short), knock once in each `[Sound] iKnockSound` mode (settings page "Knock sound", Save, or the INI and Reload):
+
+1. **Wood (3, default).** In third person the player bangs on the door (IdleMT_DoorBang); five wooden knocks at the door at about 1.45, 1.85, 4.55, 4.85 and 5.15 s. Log: `wood knock on <door>: idle IdleMT_DoorBang started`, then `knock sound (wood N of 5 ...)` five times. Knock again and walk away at once: the log says `interrupted (moved away) after N of 5 knocks` and no more knocks sound. Also try it in first person (idle may not start; knocks still play).
+2. **Sharp only (1).** Two sharp knocks, no stone grinding first. Log at load: `[Sound] path form ... MATCH` on one line and `[Sound] sharp knock: file ...`; on the knock `knock sound (sharp only, file ...) ...: playing`.
+3. **Full (2).** The old 1.2.0 sound, grinding included.
+4. **Off (0).** No knock sound; the answer still comes.

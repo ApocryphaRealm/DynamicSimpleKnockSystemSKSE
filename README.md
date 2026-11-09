@@ -26,11 +26,26 @@ The answer is spoken from the door with the native `ObjectReference.Say(topic, s
 
 The door's lock is opened and the cell's Public flag set in memory only, with no change flag on either form, so the game's save carries nothing of it. One let-in exists at a time, kept in a single SKSE co-save record, so a save made inside still works. It ends the next time a load finishes with you in an exterior cell: the door locks again and the cell returns to what it was.
 
+## The knock sound
+
+`[Sound] iKnockSound`, also on the settings page:
+
+- **Wood** (3, the default): you bang on the door with the game's own door-bang idle (IdleMT_DoorBang) and a wooden knock, the game's FSTPlayerWoodBarefootSprintL sound, sounds at the door five times, 1.45, 1.85, 4.55, 4.85 and 5.15 seconds after the bang starts. Moving away, drawing or sheathing a weapon, or another idle stops the knocks still to come.
+- **Sharp only** (1): the end of the game's Labyrinthian door knock, its two sharp knocks without the stone grinding before them, from the mod's own sound file.
+- **Full** (2): the game's Labyrinthian door knock whole (`sKnockSound`), stone grinding included.
+- **Off** (0): no knock sound.
+
+Every sound is a vanilla record or the mod's own loose file, so this needs no plugin.
+
 ## Conflicts
 
 Simple Activate works alongside: it hides the first line of a prompt, so while it is loaded the prompt is one line, "Knock: name". Lock Interaction Overhaul's auto-pick and crime apply to Pick the lock as to any picking.
 
 Simpler Knock and its patches do the same job through a perk. Use one or the other.
+
+## Credit
+
+kialiva, on the mod's Nexus page, for the wood knock: the FSTPlayerWoodBarefootSprintL sound with IdleMT_DoorBang and the five timings.
 
 ## Building
 

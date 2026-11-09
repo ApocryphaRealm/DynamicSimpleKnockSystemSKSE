@@ -86,6 +86,7 @@ namespace settings
 					else if (section == "voice" && key == "srefusetopic") { refuseTopic = value; }
 					else if (section == "voice" && key == "ivoicevolume") { voiceVolume = std::clamp(std::stoi(value), 0, 100); }
 					else if (section == "sound" && key == "sknocksound") { knockSound = value; }
+					else if (section == "sound" && key == "iknocksound") { knockSoundMode = std::clamp(std::stoi(value), 0, 3); }
 				}
 				catch (...)
 				{
@@ -95,7 +96,8 @@ namespace settings
 			logger::info("settings read from {}: enabled={} day={}-{} exclusions={} logLevel={}", iniPath, enabled, dayStartHour, dayEndHour, exclusions.size(), logLevel);
 			logger::info("decision: friendRank={} knockSpeech={} persuadeSpeech={} night+{} asleep+{} bounty>={}:+{} thief>={}:+{} dislike+{}/rank intimidateMargin={} retryHours={}",
 				friendRank, knockSpeech, persuadeSpeech, nightPenalty, asleepPenalty, bountyGold, bountyPenalty, thiefGold, thiefPenalty, dislikePenalty, intimidateMargin, retryHours);
-			logger::info("voice: let in {}, refuse {}, volume {}%; knock sound {}", letInTopic, refuseTopic, voiceVolume, knockSound.empty() ? "none" : knockSound);
+			logger::info("voice: let in {}, refuse {}, volume {}%; knock sound {} (iKnockSound {}: {})", letInTopic, refuseTopic, voiceVolume, knockSound.empty() ? "none" : knockSound,
+				knockSoundMode, knockSoundMode == kKnockOff ? "off" : knockSoundMode == kKnockFull ? "full" : knockSoundMode == kKnockWood ? "wood" : "sharp only");
 			return true;
 		}
 
@@ -174,6 +176,7 @@ namespace settings
 		WriteKey(lines, "Decision", "iIntimidateMargin", std::to_string(intimidateMargin));
 		WriteKey(lines, "Decision", "iRetryHours", std::to_string(retryHours));
 		WriteKey(lines, "Voice", "iVoiceVolume", std::to_string(voiceVolume));
+		WriteKey(lines, "Sound", "iKnockSound", std::to_string(knockSoundMode));
 		WriteKey(lines, "Debug", "uLogLevel", std::to_string(logLevel));
 
 		std::ofstream out(iniPath, std::ios::trunc);
@@ -204,6 +207,7 @@ namespace settings
 		dislikePenalty = 15;
 		intimidateMargin = 0;
 		retryHours = 1;
+		knockSoundMode = kKnockWood;
 	}
 
 	void ApplyLogLevel()

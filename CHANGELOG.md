@@ -8,6 +8,16 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 * **failed** - built but crashed or malfunctioned; the number was reclaimed
 * **scratch** - a hypothesis-test build that never held a real number
 
+## 1.3.0 - 2026-11-09 - untested
+
+### Added
+- Sharp only: the end of the Labyrinthian door knock, its two sharp knocks without the 1.1 s of stone grinding before them, as the mod's own loose sound file (Sound\FX\DynamicSimpleKnock\DSK_Knock_Sharp.wav, cut from the game's file 5 ms before its first knock with a 5 ms fade-in), played by file path. No plugin.
+- Wood knock (the idea and the timings are kialiva's, from the mod's Nexus comments): you bang on the door with the game's IdleMT_DoorBang and the game's wooden footstep sound FSTPlayerWoodBarefootSprintL knocks at the door 1450, 1850, 4550, 4850 and 5150 ms after the bang starts; moving away, drawing or sheathing, another idle or a cell change cancels the knocks still to come. No plugin: both are Skyrim.esm records.
+- Knock sound setting: [Sound] iKnockSound and a Knock sound slider on the settings page, in all eleven languages: wood / sharp only / full / off, default wood.
+
+### Changed
+- The knock no longer sounds like kicking a huge metal door on a wooden house door (reported on Nexus): the default is now the wood knock; the old sound is still there as full.
+
 ## 1.2.0 - 2026-11-08 - working
 
 ### Fixed

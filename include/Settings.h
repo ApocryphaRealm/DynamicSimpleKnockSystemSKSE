@@ -32,8 +32,15 @@ namespace settings
 	inline std::string refuseTopic = "Skyrim.esm|0x06AEA2";   // DialogueGeneric, subtype Time To Go: "You need to leave."
 	inline int voiceVolume = 100;         // iVoiceVolume:Voice - 0 to 100, how loud the answer through the door is, in percent of the game's own loudness. On the page.
 
-	// [Sound] - the knock itself, a vanilla sound descriptor "Plugin|0xID" played at the door on Knock; empty = no sound. Not on the page.
+	// [Sound] - the knock itself. iKnockSound (on the page): 0 = off, 1 = sharp only (our own loose file, the last 3.5 s of the
+	// vanilla knock: the two knocks without the stone grinding before them), 2 = full (the vanilla descriptor below),
+	// 3 = wood (the player plays IdleMT_DoorBang and a vanilla wood footstep knocks five times; kialiva's idea and timings).
+	enum KnockSoundMode : int { kKnockOff = 0, kKnockSharp = 1, kKnockFull = 2, kKnockWood = 3 };
+	inline int knockSoundMode = kKnockWood;   // iKnockSound:Sound - wood by default (Main Agent's order 2, 2026-11-09)
+	// sKnockSound - the vanilla sound descriptor "Plugin|0xID" that "full" plays; empty = no sound in "full". Not on the page.
 	inline std::string knockSound = "Skyrim.esm|0x10080A";   // DRSStoneLabyrinthianKnock, Sound\FX\DRS\Labyrinthian\DRS_Stone_Labyrinthian_Knock.wav
+	// The "sharp only" file, shipped loose with the mod, relative to Data.
+	inline constexpr const char* kKnockSharpFile = "Sound\\FX\\DynamicSimpleKnock\\DSK_Knock_Sharp.wav";
 
 	// [Exclusions] - every value of the section: "Plugin.esp|0x123456" or an editor ID. Not on the page, by design.
 	inline std::vector<std::string> exclusions;

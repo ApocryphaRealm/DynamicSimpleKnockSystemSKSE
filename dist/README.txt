@@ -17,6 +17,10 @@ Left alone: your own home, doors you hold the key to, dungeons, places with anyb
 
 Do not use it together with Simpler Knock or its patches.
 
+Knock sound ([Sound] iKnockSound, also on the settings page): Wood, the default, bangs on the door with the game's door-bang idle while a wooden knock sounds five times; moving away or drawing a weapon stops it. Sharp only plays the two sharp knocks at the end of the game's Labyrinthian door knock, from the mod's own sound file. Full plays that whole sound, stone grinding included. Off is silent. No plugin either way.
+
+Credit: kialiva, on the mod's Nexus page, for the wood knock (the sound, the idle and the five timings).
+
 Settings: an optional page in the Apocrypha Menu Framework or SKSE Menu Framework (enable, day hours, and every number under Who lets you in), and the INI, SKSE\Plugins\DynamicSimpleKnock.ini.
 
 Requires SKSE and Address Library. Skyrim SE 1.5.97, AE 1.6.1170, and 1.7.99 / 1.7.104.

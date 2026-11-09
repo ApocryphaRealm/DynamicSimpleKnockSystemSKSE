@@ -83,6 +83,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
+#include <filesystem>
 #include <cctype>
 #include <chrono>
 #include <deque>
@@ -227,7 +229,12 @@ namespace knock
 		RE::FormID g_passDoor = 0;      // the next Activate on this door goes to the game untouched
 		RE::FormID g_choiceRunDoor = 0; // the door a perk's activate-choice box is answering for, while it answers (ActivateChoiceHooks)
 		bool g_simpleActivate = false;
-		RE::BGSSoundDescriptorForm* g_knockSound = nullptr;   // [Sound] sKnockSound
+		RE::BGSSoundDescriptorForm* g_knockSound = nullptr;   // [Sound] sKnockSound, played in iKnockSound "full"
+		RE::BSResource::ID g_sharpId{};                       // [Sound] iKnockSound "sharp only": our loose file, see ResolveSharpKnock
+		bool g_sharpReady = false;
+		std::string g_sharpPath;
+		RE::BGSSoundDescriptorForm* g_woodSound = nullptr;   // [Sound] iKnockSound "wood": FSTPlayerWoodBarefootSprintL, Skyrim.esm 0E4CA6
+		RE::TESIdleForm* g_doorBangIdle = nullptr;           // IdleMT_DoorBang, Skyrim.esm 0ABEF2
 
 		// [Voice] iVoiceVolume below 100: the next spoken line's sound on the door (or on the one speaking) is turned down
 		// once it exists, which is a frame or more after Say is sent. `before` is the sound that was there when Say was sent.
@@ -924,6 +931,95 @@ namespace knock
 			}
 		}
 
+		// Plays a sound descriptor at the door, following it. `a_what` names it in the log.
+		bool PlayDescriptorAt(RE::TESObjectREFR* a_door, RE::BGSSoundDescriptorForm* a_sound, const std::string& a_what)
+		{
+			auto* audio = RE::BSAudioManager::GetSingleton();
+			if (!audio || !a_door || !a_sound) { return false; }
+			RE::BSSoundHandle handle;
+#if RUNTIME_LINE == 17
+			const bool built = audio->GetSoundHandle(handle, a_sound);
+#else
+			const bool built = audio->BuildSoundDataFromDescriptor(handle, a_sound);
+#endif
+			if (!built || !handle.IsValid())
+			{
+				logger::warn("knock sound ({}): the audio manager built no sound", a_what);
+				return false;
+			}
+			handle.SetPosition(a_door->GetPosition());
+			if (auto* node = a_door->Get3D()) { handle.SetObjectToFollow(node); }
+			const bool played = handle.Play();
+			if (played) { ++g_knockSounds; }
+			Event(std::format("knock sound ({}) at door {:08X}: {}", a_what, a_door->GetFormID(), played ? "playing" : "NOT played"));
+			return played;
+		}
+
+		// THE WOOD KNOCK (a Nexus player's idea and timings, kialiva, 2026-11-09). The player plays the vanilla idle
+		// IdleMT_DoorBang, and the vanilla wood footstep FSTPlayerWoodBarefootSprintL plays at the door 1450, 1850, 4550, 4850
+		// and 5150 ms after the idle starts (DSK has no animation start event of its own, so the clock starts when DSK starts
+		// the idle; it runs on the player's update, so it stops with the game in menus). The knocks still to come are cancelled
+		// when the idle is interrupted: the player moves away, draws or sheathes, plays another idle, or changes cell. When the
+		// idle cannot be started (first person on some setups), the knocks still play on the same clock.
+		constexpr std::array<float, 5> kWoodKnockSeconds{ 1.450F, 1.850F, 4.550F, 4.850F, 5.150F };
+		struct WoodKnock
+		{
+			RE::FormID door{ 0 };
+			RE::FormID cell{ 0 };
+			RE::NiPoint3 start{};
+			float elapsed{ 0.0F };
+			std::size_t next{ 0 };
+			bool idle{ false };
+			bool weaponDrawn{ false };
+		};
+		std::optional<WoodKnock> g_wood;
+
+		void StartWoodKnock(RE::TESObjectREFR* a_door)
+		{
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (!player || !a_door || !g_woodSound) { return; }
+			WoodKnock w;
+			w.door = a_door->GetFormID();
+			w.cell = player->GetParentCell() ? player->GetParentCell()->GetFormID() : 0;
+			w.start = player->GetPosition();
+			w.weaponDrawn = player->AsActorState() && player->AsActorState()->IsWeaponDrawn();
+			auto* process = player->GetActorRuntimeData().currentProcess;
+			w.idle = g_doorBangIdle && process && process->PlayIdle(player, g_doorBangIdle, a_door);
+			g_wood = w;
+			Event(std::format("wood knock on {:08X}: idle IdleMT_DoorBang {}; 5 knocks queued", w.door, w.idle ? "started" : "NOT started (knocks play on the same clock)"));
+		}
+
+		void TickWoodKnock(RE::PlayerCharacter* a_player, float a_delta)
+		{
+			if (!g_wood || !a_player) { return; }
+			auto& w = *g_wood;
+			const char* why = nullptr;
+			const auto* cell = a_player->GetParentCell();
+			if ((cell ? cell->GetFormID() : 0) != w.cell) { why = "changed cell"; }
+			else if (a_player->GetPosition().GetDistance(w.start) > 48.0F) { why = "moved away"; }
+			else if (const bool drawn = a_player->AsActorState() && a_player->AsActorState()->IsWeaponDrawn(); drawn != w.weaponDrawn) { why = drawn ? "drew a weapon" : "sheathed"; }
+			else if (w.idle)
+			{
+				auto* process = a_player->GetActorRuntimeData().currentProcess;
+				auto* mh = process ? process->middleHigh : nullptr;
+				if (mh && mh->lastIdlePlayed && mh->lastIdlePlayed != g_doorBangIdle) { why = "played another idle"; }
+			}
+			if (why)
+			{
+				Event(std::format("wood knock on {:08X}: interrupted ({}) after {} of 5 knocks; the rest cancelled", w.door, why, w.next));
+				g_wood.reset();
+				return;
+			}
+			w.elapsed += a_delta;
+			while (w.next < kWoodKnockSeconds.size() && w.elapsed >= kWoodKnockSeconds[w.next])
+			{
+				auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(w.door);
+				PlayDescriptorAt(door, g_woodSound, std::format("wood {} of 5 at {:.0f} ms", w.next + 1, kWoodKnockSeconds[w.next] * 1000.0F));
+				++w.next;
+			}
+			if (w.next >= kWoodKnockSeconds.size()) { g_wood.reset(); }
+		}
+
 		struct PlayerHooks
 		{
 			static void Update(RE::PlayerCharacter* a_this, float a_delta)
@@ -931,6 +1027,7 @@ namespace knock
 				_Update(a_this, a_delta);
 				ClearTrespassing(a_this);
 				ApplyVoiceVolume();
+				TickWoodKnock(a_this, a_delta);
 			}
 			static inline REL::Relocation<decltype(Update)> _Update;
 		};
@@ -1263,30 +1360,105 @@ namespace knock
 			ScheduleRefusalBox(a_door->GetFormID());
 		}
 
-		// THE KNOCK SOUND (the owner, 2026-11-08). Vanilla has no wood-door knock; the one knock-on-a-door sound descriptor in
-		// Skyrim.esm is DRSStoneLabyrinthianKnock 10080A (found by script, 2026-11-08), set in [Sound] sKnockSound. Played at
-		// the door and following it, once per Knock, whoever is home.
+		// THE KNOCK SOUND (the owner, 2026-11-08; modes 2026-11-09). Vanilla has no wood-door knock; the one knock-on-a-door
+		// sound descriptor in Skyrim.esm is DRSStoneLabyrinthianKnock 10080A (found by script, 2026-11-08). Its file opens with
+		// about 1.1 s of stone grinding before two knocks, which a player heard as kicking a huge metal door (Nexus, 2026-11-09).
+		// [Sound] iKnockSound: 3 wood (default, see StartWoodKnock); 0 off; 1 sharp only = our own loose file, the vanilla file cut 5 ms before its first
+		// knock (1.0994 s, found by waveform analysis) with a 5 ms fade-in, played by file path, no plugin; 2 full = the
+		// vanilla descriptor in sKnockSound. CommonLibSSE-NG's BSSoundHandle has no seek or start offset, so the cut is a file.
+		// Played at the door and following it, once per Knock, whoever is home.
 		void PlayKnock(RE::TESObjectREFR* a_door)
 		{
-			if (!g_knockSound || !a_door) { return; }
+			if (!a_door || settings::knockSoundMode == settings::kKnockOff) { return; }
+			if (settings::knockSoundMode == settings::kKnockWood)
+			{
+				StartWoodKnock(a_door);
+				return;
+			}
+			if (settings::knockSoundMode == settings::kKnockFull)
+			{
+				if (g_knockSound) { PlayDescriptorAt(a_door, g_knockSound, std::format("full, descriptor {:08X}", g_knockSound->GetFormID())); }
+				return;
+			}
 			auto* audio = RE::BSAudioManager::GetSingleton();
 			if (!audio) { return; }
 			RE::BSSoundHandle handle;
+			bool built = false;
+			std::string what;
+			{
+				if (!g_sharpReady) { return; }
+				constexpr std::uint32_t kFlags = 0x1A;     // the flags the descriptor path defaults to
+				constexpr std::uint32_t kPriority = 128;   // a sound descriptor's default priority
 #if RUNTIME_LINE == 17
-			const bool built = audio->GetSoundHandle(handle, g_knockSound);
+				audio->GetSoundHandleByFile(handle, g_sharpId, kFlags, kPriority);
 #else
-			const bool built = audio->BuildSoundDataFromDescriptor(handle, g_knockSound);
+				audio->BuildSoundDataFromFile(handle, g_sharpId, kFlags, kPriority);
 #endif
+				built = handle.IsValid();
+				what = std::format("sharp only, file {}", g_sharpPath);
+			}
 			if (!built || !handle.IsValid())
 			{
-				logger::warn("knock sound {:08X}: the audio manager built no sound", g_knockSound->GetFormID());
+				logger::warn("knock sound ({}): the audio manager built no sound", what);
 				return;
 			}
 			handle.SetPosition(a_door->GetPosition());
 			if (auto* node = a_door->Get3D()) { handle.SetObjectToFollow(node); }
 			const bool played = handle.Play();
 			if (played) { ++g_knockSounds; }
-			logger::info("knock sound {:08X} at door {:08X}: {}", g_knockSound->GetFormID(), a_door->GetFormID(), played ? "playing" : "NOT played");
+			Event(std::format("knock sound ({}) at door {:08X}: {}", what, a_door->GetFormID(), played ? "playing" : "NOT played"));
+		}
+
+		// Which path form BSResource::ID::GenerateFromPath wants for a sound file is not documented, so it is read from the game:
+		// the vanilla knock descriptor 10080A holds the ID of DRS_Stone_Labyrinthian_Knock.wav, and the candidate form whose
+		// generated ID equals it is the form used for our own file.
+		void ResolveSharpKnock()
+		{
+			g_sharpReady = false;
+			const std::string rel = settings::kKnockSharpFile;   // Sound/FX/DynamicSimpleKnock/DSK_Knock_Sharp.wav, written with backslashes
+			const std::string relNoSound = rel.substr(std::string("Sound\\").size());
+			const std::array<std::pair<std::string, std::string>, 3> forms{ {
+				{ "Sound\\FX\\DRS\\Labyrinthian\\DRS_Stone_Labyrinthian_Knock.wav", rel },
+				{ "FX\\DRS\\Labyrinthian\\DRS_Stone_Labyrinthian_Knock.wav", relNoSound },
+				{ "Data\\Sound\\FX\\DRS\\Labyrinthian\\DRS_Stone_Labyrinthian_Knock.wav", "Data\\" + rel },
+			} };
+			const RE::BGSStandardSoundDef* vanilla = nullptr;
+			if (auto* dh = RE::TESDataHandler::GetSingleton())
+			{
+				if (auto* form = dh->LookupForm<RE::BGSSoundDescriptorForm>(0x10080A, "Skyrim.esm"); form && form->soundDescriptor)
+				{
+					vanilla = skyrim_cast<RE::BGSStandardSoundDef*>(form->soundDescriptor);
+				}
+			}
+			std::string chosen;
+			if (vanilla && !vanilla->soundFiles.empty())
+			{
+				const auto& want = vanilla->soundFiles[0];
+				for (const auto& [probe, ours] : forms)
+				{
+					RE::BSResource::ID id{};
+					id.GenerateFromPath(probe.c_str());
+					const bool match = id.file == want.file && id.dir == want.dir && std::memcmp(id.ext, want.ext, sizeof(id.ext)) == 0;
+					logger::info("[Sound] path form \"{}\": ID {:08X}/{:08X} vs vanilla {:08X}/{:08X}: {}", probe, id.dir, id.file, want.dir, want.file, match ? "MATCH" : "no");
+					if (match && chosen.empty()) { chosen = ours; }
+				}
+			}
+			if (chosen.empty())
+			{
+				chosen = rel;
+				logger::warn("[Sound] no path form matched the vanilla knock's file ID (descriptor {}); using \"{}\"", vanilla ? "found" : "not found", chosen);
+			}
+			const auto onDisk = std::filesystem::current_path() / "Data" / rel;
+			std::error_code ec;
+			if (!std::filesystem::exists(onDisk, ec))
+			{
+				logger::warn("[Sound] sharp knock file {} is missing; \"sharp only\" plays nothing. Reinstall the mod.", onDisk.string());
+			}
+			g_sharpId = {};
+			g_sharpId.GenerateFromPath(chosen.c_str());
+			g_sharpPath = chosen;
+			g_sharpReady = true;
+			logger::info("[Sound] sharp knock: file \"{}\" (ID {:08X}/{:08X})", chosen, g_sharpId.dir, g_sharpId.file);
 		}
 
 		// Knock, Persuade or Intimidate on a door the rule has called a home. Nothing here opens the door by itself: a let-in
@@ -1620,6 +1792,11 @@ namespace knock
 			else { logger::warn("[Sound] knock \"{}\" is not a sound descriptor in this load order; no knock sound", s); }
 		}
 		else { logger::info("[Sound] knock: none"); }
+		ResolveSharpKnock();
+		g_woodSound = dh ? dh->LookupForm<RE::BGSSoundDescriptorForm>(0x0E4CA6, "Skyrim.esm") : nullptr;
+		g_doorBangIdle = dh ? dh->LookupForm<RE::TESIdleForm>(0x0ABEF2, "Skyrim.esm") : nullptr;
+		logger::info("[Sound] wood knock: sound FSTPlayerWoodBarefootSprintL {}, idle IdleMT_DoorBang {}", g_woodSound ? "found" : "MISSING", g_doorBangIdle ? "found" : "MISSING");
+		g_wood.reset();
 
 		// The get-out nag topics: every Time To Go, Trespass and Trespass Against NPC topic in the load order.
 		UnmuteNags("settings read");

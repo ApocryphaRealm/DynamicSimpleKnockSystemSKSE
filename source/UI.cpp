@@ -212,6 +212,18 @@ namespace UI
 			"Game hours after a refusal before a knock starts over, with Persuade and Intimidate offered again.");
 
 		ImGuiMCP::SeparatorText(strings::TR("DSK_Sound", "Sound"));
+		{
+			// [Sound] iKnockSound, 0 to 3; the slider shows the mode's name instead of its number.
+			const char* names[] = { strings::TR("DSK_KnockOff", "Off"), strings::TR("DSK_KnockSharp", "Sharp only"),
+				strings::TR("DSK_KnockFull", "Full"), strings::TR("DSK_KnockWood", "Wood") };
+			static_assert(sizeof(names) / sizeof(names[0]) == 4);
+			settings::knockSoundMode = std::clamp(settings::knockSoundMode, 0, 3);
+			std::string shown = names[settings::knockSoundMode];
+			for (std::size_t at = shown.find('%'); at != std::string::npos; at = shown.find('%', at + 2)) { shown.insert(at, "%"); }
+			precise::SliderInt(strings::TR("DSK_KnockSound", "Knock sound"), &settings::knockSoundMode, 0, 3, shown.c_str());
+			HelpMarker(strings::TR("DSK_HelpKnockSound",
+				"Wood: you bang on the door and a wooden knock sounds five times. Sharp only: the end of the game's Labyrinthian door knock, two sharp knocks. Full: that whole sound, stone grinding included. Off: no knock sound."));
+		}
 		IntSlider(strings::TR("DSK_VoiceVolume", "Answer volume"), &settings::voiceVolume, 0, 100, "DSK_HelpVoiceVolume",
 			"How loud the answer through the door is, in percent of the game's own loudness. 100: as the game plays it.");
 
