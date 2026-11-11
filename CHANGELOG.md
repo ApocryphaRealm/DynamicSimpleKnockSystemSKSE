@@ -8,6 +8,11 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 * **failed** - built but crashed or malfunctioned; the number was reclaimed
 * **scratch** - a hypothesis-test build that never held a real number
 
+## 1.3.1 - 2026-11-11 - untested
+
+### Fixed
+- Knock now works with lockpicking mods that take the Activate press with a perk (ESO Lockpick Menu and the like): the press on a Knock door opens the knock box first; Pick the lock still opens the lockpick menu.
+
 ## 1.3.0 - 2026-11-09 - working
 
 ### Added

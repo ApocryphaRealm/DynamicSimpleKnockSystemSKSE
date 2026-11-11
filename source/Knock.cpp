@@ -246,7 +246,7 @@ namespace knock
 			std::chrono::steady_clock::time_point until{};
 		};
 		VoiceVolume g_voiceVolume;
-		std::uint32_t g_knockSounds = 0, g_voiceVolumeSet = 0, g_voiceVolumeMissed = 0, g_perkChoiceRuns = 0, g_perkDefaultKnock = 0;
+		std::uint32_t g_knockSounds = 0, g_voiceVolumeSet = 0, g_voiceVolumeMissed = 0, g_perkChoiceRuns = 0, g_perkDefaultKnock = 0, g_buttonKnocks = 0;
 		LetIn g_letIn;
 		Refusal g_refusal;
 		Overrides g_over;
@@ -1735,6 +1735,62 @@ namespace knock
 			static inline REL::Relocation<decltype(Run)> _Run;
 		};
 
+		// THE ACTIVATE BUTTON ITSELF (Nexus report 2026-11-11, Dutz14: with ESO Lockpick Menu "it goes straight to lockpicking
+		// minigame instead every single time"). ESO Lockpick Menu 1.07's TES4LockpickMenu.esl gives the player perk
+		// SKYBUILockpickPerk (000872): an Activate entry point, Add Activate Choice with RunImmediately + ReplaceDefault,
+		// priority 250, on a target with GetLocked == 1 and GetLockLevel <= 100 (read from the plugin, 2026-11-11). The engine
+		// runs such a choice inside TESObjectREFR::ActivateRef, before the door's own Activate (slot 0x37), and replaces it - so
+		// DoorHooks::Activate is never called (repro 3a4c: no Activate line in the log on the press). Any lockpick mod made the
+		// same way does this. So the press is taken one step earlier, in the player's ActivateHandler (vtable slot 4,
+		// ProcessButton), before ActivateRef and its perks: when the door under the crosshair shows Knock, the press opens the
+		// knock box and goes no further. Its release is held back with it. "Pick the lock" in the box passes the door to the game
+		// (g_passDoor), whose ActivateRef then runs every perk as before - ESO's lockpicking included. Every other press, and a
+		// door the rule does not offer Knock on (sneaking, a key held, a dungeon), goes to the game untouched.
+		struct InputHooks
+		{
+			static void ProcessButton(RE::ActivateHandler* a_this, RE::ButtonEvent* a_event, RE::PlayerControlsData* a_data)
+			{
+				if (a_event && a_event->IsDown())
+				{
+					t_swallowRelease = false;
+					if (TakePress())
+					{
+						t_swallowRelease = true;
+						return;
+					}
+				}
+				else if (a_event && t_swallowRelease && !a_event->IsPressed())
+				{
+					t_swallowRelease = false;
+					return;
+				}
+				else if (a_event && t_swallowRelease) { return; }  // held while the box opens: none of it reaches the game
+				_ProcessButton(a_this, a_event, a_data);
+			}
+
+			static bool TakePress()
+			{
+				if (!settings::enabled || !g_promptDoor) { return false; }
+				auto* pick = RE::CrosshairPickData::GetSingleton();
+				// the crosshair's reference: the handle at +0x04 on SE and AE alike (target / target[0]; the two CommonLibSSE-NG
+				// builds this mod compiles against name the member differently)
+				const auto target = pick ? reinterpret_cast<const RE::ObjectRefHandle*>(reinterpret_cast<std::uintptr_t>(pick) + 0x4)->get() : RE::NiPointer<RE::TESObjectREFR>();
+				if (!target || target->GetFormID() != g_promptDoor || target->GetFormID() == g_passDoor) { return false; }
+				Home home;
+				if (Classify(target.get(), home) != Verdict::kHome) { return false; }
+				const bool shown = RefuserHome(target->GetFormID(), home) ? ShowRefusalBox(target.get(), home) : ShowChoice(target.get(), home);
+				if (shown)
+				{
+					++g_buttonKnocks;
+					Event(std::format("the Activate button on {:08X} opened the knock box (ahead of ActivateRef and its perks)", target->GetFormID()));
+				}
+				return shown;
+			}
+
+			static inline bool t_swallowRelease = false;
+			static inline REL::Relocation<decltype(ProcessButton)> _ProcessButton;
+		};
+
 		struct Sinks :
 			public RE::BSTEventSink<RE::MenuOpenCloseEvent>,
 			public RE::BSTEventSink<RE::TESTopicInfoEvent>
@@ -1783,6 +1839,10 @@ namespace knock
 		REL::Relocation<std::uintptr_t> choice{ RE::VTABLE___ActivateChoiceMenuCallbackFunctor[0] };
 		ActivateChoiceHooks::_Run = choice.write_vfunc(0x1, ActivateChoiceHooks::Run);
 		logger::info("perk activate-choice box hook: Run (slot 1) was at {:X}", ActivateChoiceHooks::_Run.address());
+
+		REL::Relocation<std::uintptr_t> activateHandler{ RE::VTABLE_ActivateHandler[0] };
+		InputHooks::_ProcessButton = activateHandler.write_vfunc(0x4, InputHooks::ProcessButton);
+		logger::info("activate button hook: ActivateHandler::ProcessButton (slot 4) was at {:X}", InputHooks::_ProcessButton.address());
 
 		REL::Relocation<std::uintptr_t> character{ RE::VTABLE_Character[0] };
 		TrespassHooks::_Character = character.write_vfunc(0xD7, TrespassHooks::Character);
@@ -1989,7 +2049,7 @@ namespace knock
 			"\"topics\":{{\"letIn\":\"{:08X}\",\"refuse\":\"{:08X}\"}},\"settings\":{},\"overrides\":{},\"lastDecision\":{},"
 			"\"table\":{{\"built\":{},\"actors\":{},\"ms\":{}}},"
 			"\"exclusions\":{{\"forms\":{},\"editorIDs\":{},\"unresolved\":{}}},"
-			"\"counts\":{{\"prompts\":{},\"knocks\":{},\"letIn\":{},\"nobody\":{},\"refused\":{},\"persuaded\":{},\"notPersuaded\":{},\"intimidated\":{},\"notIntimidated\":{},\"says\":{},\"sayFailed\":{},\"trespassBlocked\":{},\"nagMutes\":{},\"nagLeaks\":{},\"nagsMutedNow\":{},\"trespassFlagCleared\":{},\"knockSounds\":{},\"voiceVolumeSet\":{},\"voiceVolumeMissed\":{},\"perkChoiceRuns\":{},\"perkDefaultKnock\":{}}},\"voiceVolume\":{},\"knockSound\":\"{:08X}\",\"events\":[{}]}}",
+			"\"counts\":{{\"prompts\":{},\"knocks\":{},\"letIn\":{},\"nobody\":{},\"refused\":{},\"persuaded\":{},\"notPersuaded\":{},\"intimidated\":{},\"notIntimidated\":{},\"says\":{},\"sayFailed\":{},\"trespassBlocked\":{},\"nagMutes\":{},\"nagLeaks\":{},\"nagsMutedNow\":{},\"trespassFlagCleared\":{},\"knockSounds\":{},\"voiceVolumeSet\":{},\"voiceVolumeMissed\":{},\"perkChoiceRuns\":{},\"perkDefaultKnock\":{},\"buttonKnocks\":{}}},\"voiceVolume\":{},\"knockSound\":\"{:08X}\",\"events\":[{}]}}",
 			settings::enabled, settings::dayStartHour, settings::dayEndHour, calendar ? calendar->GetHour() : -1.0F, IsDay(), g_simpleActivate, g_promptDoor, g_choiceDoor, g_buttons.size(),
 			g_letIn.door, g_letIn.cell, g_letIn.cellWasPublic,
 			g_refusal.door, g_refusal.speaker, RefusalActive(g_refusal.door), g_refusal.triedPersuade, g_refusal.triedIntimidate,
@@ -1997,7 +2057,7 @@ namespace knock
 			g_tableBuilt, g_tableActors, g_tableMs,
 			g_excludedIDs.size(), g_excludedEditorIDs.size(), g_excludedUnresolved,
 			g_promptsShown, g_knocks, g_letIns, g_nobody, g_refused, g_persuaded, g_notPersuaded, g_intimidated, g_notIntimidated, g_says, g_sayFailed, g_trespassBlocked, g_nagMutes, g_nagLeaks, !g_muted.empty(), g_trespassFlagCleared,
-			g_knockSounds, g_voiceVolumeSet, g_voiceVolumeMissed, g_perkChoiceRuns, g_perkDefaultKnock, settings::voiceVolume, g_knockSound ? g_knockSound->GetFormID() : 0, events);
+			g_knockSounds, g_voiceVolumeSet, g_voiceVolumeMissed, g_perkChoiceRuns, g_perkDefaultKnock, g_buttonKnocks, settings::voiceVolume, g_knockSound ? g_knockSound->GetFormID() : 0, events);
 	}
 
 	std::string CheckJson(std::uint32_t a_refID)
