@@ -1588,13 +1588,30 @@ namespace knock
 			Answer(door, home, Act::kKnock);
 		}
 
-		// Runs the game's own Activate on the door, past our hook: the game's lock path runs.
+		// Runs the game's own activation of the door, past our hooks (g_passDoor): the game's lock path runs.
+		// 1.3.1 (2026-11-11, test fb81): through the PLAYER's activation (PlayerCharacter::ActivatePickRef - the crosshair
+		// reference) when the door is still under the crosshair, which it is right after the box. Perk Activate entry points
+		// (ESO Lockpick Menu's RunImmediately + ReplaceDefault lockpick perk, Ordinator's Bypass Lock choice) run on that path,
+		// not inside TESObjectREFR::ActivateRef: `<door>.activate player` from the console brought up our own box, and Pick
+		// the lock through ActivateRef never reached ESO's lockpicking. ActivateRef stays the fallback for a door no longer
+		// under the crosshair.
 		void PassToGame(RE::TESObjectREFR* a_door)
 		{
 			auto* player = RE::PlayerCharacter::GetSingleton();
 			if (!a_door || !player) { return; }
 			g_passDoor = a_door->GetFormID();
-			a_door->ActivateRef(player, 0, nullptr, 1, false);
+			auto* pick = RE::CrosshairPickData::GetSingleton();
+			const auto target = pick ? reinterpret_cast<const RE::ObjectRefHandle*>(reinterpret_cast<std::uintptr_t>(pick) + 0x4)->get() : RE::NiPointer<RE::TESObjectREFR>();
+			if (target && target.get() == a_door)
+			{
+				Event(std::format("pick: {:08X} handed to the player's own activation (perks run)", a_door->GetFormID()));
+				player->ActivatePickRef();
+			}
+			else
+			{
+				Event(std::format("pick: {:08X} is not under the crosshair; the door's own activation", a_door->GetFormID()));
+				a_door->ActivateRef(player, 0, nullptr, 1, false);
+			}
 			g_passDoor = 0;
 		}
 

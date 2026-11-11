@@ -11,6 +11,7 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 ## 1.3.1 - 2026-11-11 - working
 
 ### Fixed
+- Pick the lock from the knock box hands the door to the player's own activation, so lockpicking mods that work through an activate perk (ESO Lockpick Menu) open their lockpicking.
 - Knock now works with lockpicking mods that take the Activate press with a perk (ESO Lockpick Menu and the like): the press on a Knock door opens the knock box first; Pick the lock still opens the lockpick menu.
 
 ## 1.3.0 - 2026-11-09 - working
