@@ -1840,9 +1840,16 @@ namespace knock
 		ActivateChoiceHooks::_Run = choice.write_vfunc(0x1, ActivateChoiceHooks::Run);
 		logger::info("perk activate-choice box hook: Run (slot 1) was at {:X}", ActivateChoiceHooks::_Run.address());
 
+#if RUNTIME_LINE == 17
+		// Skyrim 1.7 put two new functions at slots 4 and 5 of every player input handler's vtable, so ProcessButton moved to
+		// slot 6; CommonLibSSE-NG 7.2 still names slot 4 (Walk or Run for Controller, 2026-11-08; gate rule input-handler-vfunc-slot4-wrong-on-17).
+		constexpr std::size_t kProcessButtonSlot = 6;
+#else
+		constexpr std::size_t kProcessButtonSlot = 4;
+#endif
 		REL::Relocation<std::uintptr_t> activateHandler{ RE::VTABLE_ActivateHandler[0] };
-		InputHooks::_ProcessButton = activateHandler.write_vfunc(0x4, InputHooks::ProcessButton);
-		logger::info("activate button hook: ActivateHandler::ProcessButton (slot 4) was at {:X}", InputHooks::_ProcessButton.address());
+		InputHooks::_ProcessButton = activateHandler.write_vfunc(kProcessButtonSlot, InputHooks::ProcessButton);
+		logger::info("activate button hook: ActivateHandler::ProcessButton (slot {}) was at {:X}", kProcessButtonSlot, InputHooks::_ProcessButton.address());
 
 		REL::Relocation<std::uintptr_t> character{ RE::VTABLE_Character[0] };
 		TrespassHooks::_Character = character.write_vfunc(0xD7, TrespassHooks::Character);
