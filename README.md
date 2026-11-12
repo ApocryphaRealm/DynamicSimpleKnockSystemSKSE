@@ -10,7 +10,7 @@ Requires SKSE and Address Library. Skyrim SE 1.5.97, AE 1.6.1170, and 1.7.99 / 1
 
 A locked door in an exterior cell whose teleport leads to an interior, where the door, its other half or the destination cell has an owner (an NPC or a faction), or where a living resident is placed.
 
-Left alone: you sneaking or in combat, you holding the key, your own home, destination locations with a dungeon keyword, anybody there hostile to you, and the `[Exclusions]` list in the INI. Doors between two interiors are left alone too: most are jarls' quarters, temple sanctums and vaults.
+Left alone: you sneaking or in combat, you holding the key, your own home, destination locations with a dungeon keyword, anybody there hostile to you, and the `[Exclusions]` list in the INI. Public places are left to the game too: a door into an inn (location type LocTypeInn), or into a cell its plugin marks PublicArea (temples, keeps, guild halls, jails), shows no Knock even when another mod has locked it, and the game's own lock applies. A house the game also marks PublicArea (location type LocTypeHouse) is still a home; shops are homes too. Doors between two interiors are left alone too: most are jarls' quarters, temple sanctums and vaults.
 
 ## Who answers
 
@@ -24,7 +24,7 @@ The answer is spoken from the door with the native `ObjectReference.Say(topic, s
 
 ## Being let in
 
-The door's lock is opened and the cell's Public flag set in memory only, with no change flag on either form, so the game's save carries nothing of it. One let-in exists at a time, kept in a single SKSE co-save record, so a save made inside still works. It ends the next time a load finishes with you in an exterior cell: the door locks again and the cell returns to what it was.
+The door's lock is opened and the cell's Public flag set in memory only, with no change flag on either form, so the game's save carries nothing of it. One let-in exists at a time, kept in a single SKSE co-save record, so a save made inside still works. It ends the next time a load finishes with you in an exterior cell: the door locks again and the cell returns to what it was. The door is locked again only if Knock unlocked it and it is still as Knock left it (unlocked, same lock level); a door another mod or the console changed meanwhile is left as it is.
 
 ## The knock sound
 

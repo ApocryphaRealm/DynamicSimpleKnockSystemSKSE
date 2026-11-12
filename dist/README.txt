@@ -13,7 +13,9 @@ Let in, you are a guest: no trespass crime, nobody tells you it is time to go or
 
 One SKSE DLL: no plugin, no scripts, no patches. It reads who owns the door or the space behind it while you play, so a door from any mod works, and nobody needs to carry a key.
 
-Left alone: your own home, doors you hold the key to, dungeons, places with anybody hostile to you, doors between two interiors, and the [Exclusions] list in the INI.
+Left alone: your own home, doors you hold the key to, dungeons, places with anybody hostile to you, doors between two interiors, and the [Exclusions] list in the INI. Inns and other public places (temples, keeps, guild halls, jails) are left to the game even when another mod locks them: no Knock, just the game's own lock. Shops are still homes.
+
+When you leave a house you were let into, its door is locked again only if Knock unlocked it and nobody has changed it since.
 
 Do not use it together with Simpler Knock or its patches.
 

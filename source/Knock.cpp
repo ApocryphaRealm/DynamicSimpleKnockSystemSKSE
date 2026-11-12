@@ -6,6 +6,15 @@
 // location with a dungeon keyword, anybody there hostile to the player. Interior-to-interior doors are left alone on purpose:
 // the census shows they are mostly jarls' quarters, temple sanctums and vaults, and nobody knocks from inside the building.
 //
+// PUBLIC PLACES (1.3.2, Nexus report 2026-11-12: another mod locked the Bannered Mare at night and Knock ran house rules on
+// it). A door into a public place is left to the game: no Knock prompt, no box, the vanilla lock. Public is (a) the
+// destination location or a parent carries LocTypeInn, or (b) the cell's PublicArea flag AS LOADED FROM THE PLUGINS (a
+// snapshot of every interior cell taken at kDataLoaded, before any save or let-in - our own let-in sets the flag in memory)
+// unless the location chain carries LocTypeHouse. The house exception is there because PublicArea is also set on real homes
+// in Skyrim.esm (Nepos's House, Silus's House, the Treasury House, Honorhall, Haelga's Bunkhouse, the player houses), which
+// stay knockable. LocTypeStore is NOT public: shopkeepers live in their shops and lock them at night (Belethor's, Arcadia's
+// carry no PublicArea), and knocking on a closed shop is what this mod is for.
+//
 // WHO ANSWERS (the owner, 2026-11-05 and 2026-11-07). Only somebody in the destination cell right now: a living, enabled actor
 // whose current cell is that cell. Nobody there: no voice, no let-in, "No one's home. Come back later." The actors are read from the forms in memory, so while the cell is unloaded
 // only persistent actors can be seen, and where they are placed by the game while unloaded is what op=check reports.
@@ -61,6 +70,8 @@
 // change flag on either form, so the game's save carries nothing of it. One let-in at a time, kept in one co-save record so a
 // save made inside the house still works when loaded. It ends the next time a load finishes with the player in an exterior
 // cell: the door locks again and the cell goes back to what it was. Knock, Persuade and Intimidate all let in this way.
+// 1.3.2: the door is locked again only if Knock unlocked it AND it is still as Knock left it (unlocked, same lock level); a
+// door another mod or the console locked, unlocked or re-levelled meanwhile is left as it is (EndLetIn logs which).
 //
 // NO REPORT TO THE GUARDS (the owner, 2026-11-07). Being let in is not a crime by any path: the lock is opened for the
 // player, so no lockpicking crime; walking through an owned door is no crime; a trespass is the only crime of being in a
@@ -106,7 +117,7 @@ namespace knock
 	namespace
 	{
 		constexpr std::uint32_t kCoSaveRecord = 'LETI';
-		constexpr std::uint32_t kCoSaveVersion = 1;
+		constexpr std::uint32_t kCoSaveVersion = 2;   // 2 (1.3.2): LetIn gained weUnlocked and lockLevel; 1 is still read
 		constexpr RE::FormID kPlayerFaction = 0x000DB1;   // Skyrim.esm, PlayerFaction
 		constexpr RE::FormID kManakinRace = 0x10760A;     // Skyrim.esm, ManakinRace: a mannequin is not a resident
 
@@ -117,10 +128,15 @@ namespace knock
 			"LocTypeDragonPriestLair", "LocTypeDwarvenAutomatons", "LocTypeSprigganGrove", "LocTypeNordicRuin", "LocTypeMine"
 		};
 
+		// Public places (see PUBLIC PLACES at the top). Read from Skyrim.esm's 48 LocType keywords, 2026-11-12: only the inn is
+		// a place open to anyone by its type; temples, castles, guilds, jails and barracks come in through PublicArea.
+		constexpr const char* kPublicKeyword = "LocTypeInn";
+		constexpr const char* kHouseKeyword = "LocTypeHouse";
+
 		enum class Verdict
 		{
 			kOff, kNoPlayer, kSneaking, kInCombat, kNotLocked, kPlayerHasKey, kNoTeleport, kNotFromExterior, kNotToInterior,
-			kExcluded, kDungeon, kPlayersOwn, kNotAHome, kHostile, kHome
+			kExcluded, kDungeon, kPublic, kPlayersOwn, kNotAHome, kHostile, kHome
 		};
 
 		const char* Name(Verdict a_v)
@@ -138,6 +154,7 @@ namespace knock
 			case Verdict::kNotToInterior: return "destination not an interior";
 			case Verdict::kExcluded: return "on the exclusion list";
 			case Verdict::kDungeon: return "dungeon keyword";
+			case Verdict::kPublic: return "public place";
 			case Verdict::kPlayersOwn: return "the player's own";
 			case Verdict::kNotAHome: return "no owner, no resident";
 			case Verdict::kHostile: return "hostile";
@@ -154,6 +171,7 @@ namespace knock
 			RE::TESFaction* ownerFaction{ nullptr };
 			std::vector<RE::Actor*> residents;   // who may answer, living and enabled (see FindResidents)
 			const char* method{ "none" };       // how they were found
+			const char* publicWhy{ nullptr };   // Verdict::kPublic: which test made it public
 		};
 
 		enum class Act : std::uint8_t { kKnock, kPersuade, kIntimidate, kPick, kLeave, kPeek };
@@ -211,7 +229,21 @@ namespace knock
 			RE::FormID door{ 0 };
 			RE::FormID cell{ 0 };
 			bool cellWasPublic{ false };
+			bool weUnlocked{ false };      // 1.3.2: Knock itself unlocked the door (EndLetIn locks only such a door)
+			std::int8_t lockLevel{ 0 };    // 1.3.2: the lock's level when Knock unlocked it (changed meanwhile: not ours to lock)
 		};
+
+		// Co-save record version 1 (1.0.0 .. 1.3.1): read on load, then treated as Knock-unlocked at the level found.
+		struct LetInV1
+		{
+			RE::FormID door{ 0 };
+			RE::FormID cell{ 0 };
+			bool cellWasPublic{ false };
+		};
+
+		// Interior cells whose PublicArea flag is set as the plugins load them (kDataLoaded, before any save or let-in).
+		std::unordered_set<RE::FormID> g_publicCells;
+		bool g_publicCellsBuilt = false;
 
 		// The actor table: built once per game, from the forms in memory.
 		std::vector<RE::FormID> g_actors;
@@ -457,6 +489,42 @@ namespace knock
 			return false;
 		}
 
+		bool LocationKeyword(const RE::BGSLocation* a_location, const char* a_keyword)
+		{
+			int guard = 0;
+			for (auto* location = a_location; location && guard < 16; location = location->parentLoc, ++guard)
+			{
+				if (location->HasKeywordString(a_keyword)) { return true; }
+			}
+			return false;
+		}
+
+		// PublicArea as the plugins set it. The live flag is not that: a let-in sets it in memory (ApplyLetIn). Without the
+		// kDataLoaded snapshot (no data handler then), the let-in cell answers from what BeginLetIn saw before changing it.
+		bool StoredPublic(const RE::TESObjectCELL* a_cell)
+		{
+			if (!a_cell) { return false; }
+			const auto id = a_cell->GetFormID();
+			if (g_publicCellsBuilt) { return g_publicCells.contains(id); }
+			static bool warned = false;
+			if (!warned)
+			{
+				warned = true;
+				logger::warn("public places: no snapshot of the plugins' PublicArea flags; reading the live flag (the let-in cell from before the let-in)");
+			}
+			if (g_letIn.door && g_letIn.cell == id) { return g_letIn.cellWasPublic; }
+			return a_cell->cellFlags.any(RE::TESObjectCELL::Flag::kPublicArea);
+		}
+
+		// Why the cell is a public place (Verdict::kPublic), or nullptr for a place that may be somebody's home.
+		const char* PublicPlace(const RE::TESObjectCELL* a_cell, const RE::BGSLocation* a_location)
+		{
+			if (LocationKeyword(a_location, kPublicKeyword)) { return "its location is an inn (LocTypeInn)"; }
+			if (!StoredPublic(a_cell)) { return nullptr; }
+			if (LocationKeyword(a_location, kHouseKeyword)) { return nullptr; }   // PublicArea on a house: still a home
+			return "the cell is PublicArea in its plugin";
+		}
+
 		bool Eligible(RE::Actor* a_actor) { return a_actor && !a_actor->IsDisabled() && !a_actor->IsDead() && !IsMannequin(a_actor); }
 
 		// The cell the actor was placed in by its plugin: where it lives, wherever the game holds it now.
@@ -528,6 +596,11 @@ namespace knock
 			auto* location = cell->GetLocation();
 			if (Matches(a_door) || Matches(a_door->GetBaseObject()) || Matches(dest) || Matches(cell) || ExcludedLocation(location)) { return Verdict::kExcluded; }
 			if (DungeonKeyword(location)) { return Verdict::kDungeon; }
+			if (const char* why = PublicPlace(cell, location))
+			{
+				a_home.publicWhy = why;
+				return Verdict::kPublic;
+			}
 
 			auto* owner = a_door->extraList.GetOwner();
 			if (!owner) { owner = dest->extraList.GetOwner(); }
@@ -1065,12 +1138,28 @@ namespace knock
 			static inline REL::Relocation<decltype(Player)> _Player;
 		};
 
-		void ApplyLetIn()
+		// a_fresh: a new let-in (BeginLetIn) records whether Knock unlocks the door and at what level; a let-in read back from
+		// the co-save keeps what was recorded then and unlocks again only a door Knock had unlocked.
+		void ApplyLetIn(bool a_fresh)
 		{
 			auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(g_letIn.door);
 			auto* cell = RE::TESForm::LookupByID<RE::TESObjectCELL>(g_letIn.cell);
-			if (auto* lock = door ? door->GetLock() : nullptr) { lock->SetLocked(false); }
+			auto* lock = door ? door->GetLock() : nullptr;
+			if (!door) { logger::warn("let-in: door {:08X} not found; nothing unlocked", g_letIn.door); }
+			else if (!lock) { logger::warn("let-in: door {:08X} has no lock; nothing unlocked", g_letIn.door); }
+			if (lock)
+			{
+				if (a_fresh)
+				{
+					g_letIn.weUnlocked = door->IsLocked();
+					g_letIn.lockLevel = lock->baseLevel;
+				}
+				if (g_letIn.weUnlocked) { lock->SetLocked(false); }
+				logger::debug("let-in: door {:08X} {} (lock level {}, Knock unlocked it: {})", g_letIn.door, g_letIn.weUnlocked ? "unlocked" : "left as it is",
+					static_cast<int>(g_letIn.lockLevel), g_letIn.weUnlocked);
+			}
 			if (cell) { cell->cellFlags.set(RE::TESObjectCELL::Flag::kPublicArea); }
+			else { logger::warn("let-in: cell {:08X} not found; not made public", g_letIn.cell); }
 		}
 
 		// LEAVING FROM INSIDE (Nexus report, 2026-11-07: let in while the owner was out, the player had to pick the lock to get
@@ -1168,9 +1257,25 @@ namespace knock
 			if (!g_letIn.door) { return; }
 			auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(g_letIn.door);
 			auto* cell = RE::TESForm::LookupByID<RE::TESObjectCELL>(g_letIn.cell);
-			if (auto* lock = door ? door->GetLock() : nullptr) { lock->SetLocked(true); }
+			auto* lock = door ? door->GetLock() : nullptr;
+			// Locked again only if Knock unlocked it and it is still as Knock left it (1.3.2; until 1.3.1 it was locked whatever
+			// had happened to it, so a door another mod had unlocked meanwhile was locked again).
+			std::string what;
+			if (!door) { what = "not found, nothing locked"; }
+			else if (!g_letIn.weUnlocked) { what = "not unlocked by Knock, left as it is"; }
+			else if (!lock) { what = "has no lock any more, left as it is"; }
+			else if (door->IsLocked()) { what = std::format("already locked by something else (level {}), left as it is", static_cast<int>(lock->baseLevel)); }
+			else if (lock->baseLevel != g_letIn.lockLevel)
+			{
+				what = std::format("lock changed by something else (level {} -> {}), left unlocked", static_cast<int>(g_letIn.lockLevel), static_cast<int>(lock->baseLevel));
+			}
+			else
+			{
+				lock->SetLocked(true);
+				what = "locked again";
+			}
 			if (cell && !g_letIn.cellWasPublic) { cell->cellFlags.reset(RE::TESObjectCELL::Flag::kPublicArea); }
-			Event(std::format("let-in over ({}): door {:08X} locked again, cell {:08X} back to {}", a_why, g_letIn.door, g_letIn.cell, g_letIn.cellWasPublic ? "public" : "private"));
+			Event(std::format("let-in over ({}): door {:08X} {}, cell {:08X} back to {}", a_why, g_letIn.door, what, g_letIn.cell, g_letIn.cellWasPublic ? "public" : "private"));
 			g_letIn = {};
 		}
 
@@ -1182,7 +1287,7 @@ namespace knock
 			g_letIn.cellWasPublic = a_home.cell->cellFlags.any(RE::TESObjectCELL::Flag::kPublicArea);
 			g_trespassBlockedThisLetIn = 0;
 			g_trespassFlagClearedThisLetIn = 0;
-			ApplyLetIn();
+			ApplyLetIn(true);
 			MuteNagsForLetIn();
 		}
 
@@ -1668,6 +1773,16 @@ namespace knock
 					Home home;
 					const auto verdict = Classify(a_ref, home);
 					logger::debug("prompt on {:08X}: {}", id, Name(verdict));
+					// Once per door looked at (this runs every frame the crosshair rests on it).
+					static RE::FormID publicLogged = 0;
+					if (verdict == Verdict::kPublic && publicLogged != id)
+					{
+						publicLogged = id;
+						Event(std::format("door {:08X} leads to a public place (cell {:08X} {}): {}; Knock steps aside, the game's own lock applies", id,
+							home.cell ? home.cell->GetFormID() : 0, home.cell && home.cell->GetFormEditorID() ? home.cell->GetFormEditorID() : "",
+							home.publicWhy ? home.publicWhy : "?"));
+					}
+					else if (verdict != Verdict::kPublic && publicLogged == id) { publicLogged = 0; }
 					if (verdict == Verdict::kHome)
 					{
 						g_promptDoor = id;
@@ -1844,6 +1959,27 @@ namespace knock
 				return RE::BSEventNotifyControl::kContinue;
 			}
 		};
+	}
+
+	void SnapshotPublicCells()
+	{
+		g_publicCells.clear();
+		g_publicCellsBuilt = false;
+		auto* data = RE::TESDataHandler::GetSingleton();
+		if (!data)
+		{
+			logger::warn("public places: no data handler at kDataLoaded; the live PublicArea flag will be read instead");
+			return;
+		}
+		std::uint32_t interiors = 0;
+		for (auto* cell : data->interiorCells)
+		{
+			if (!cell) { continue; }
+			++interiors;
+			if (cell->cellFlags.any(RE::TESObjectCELL::Flag::kPublicArea)) { g_publicCells.insert(cell->GetFormID()); }
+		}
+		g_publicCellsBuilt = true;
+		logger::info("public places: {} of {} interior cells are PublicArea in the plugins (inns by LocTypeInn; PublicArea houses stay homes)", g_publicCells.size(), interiors);
 	}
 
 	void Install()
@@ -2035,16 +2171,44 @@ namespace knock
 		std::uint32_t type, version, length;
 		while (a_intfc->GetNextRecordInfo(type, version, length))
 		{
-			if (type != kCoSaveRecord || version != kCoSaveVersion || length != sizeof(LetIn)) { continue; }
+			if (type != kCoSaveRecord) { continue; }
 			LetIn saved;
-			if (a_intfc->ReadRecordData(saved) == sizeof(LetIn) &&
-				a_intfc->ResolveFormID(saved.door, saved.door) && a_intfc->ResolveFormID(saved.cell, saved.cell))
+			bool read = false;
+			if (version == kCoSaveVersion && length == sizeof(LetIn))
 			{
-				g_letIn = saved;
-				ApplyLetIn();
-				MuteNags(nullptr);
-				logger::info("the save holds a let-in: door {:08X}, cell {:08X}", g_letIn.door, g_letIn.cell);
+				read = a_intfc->ReadRecordData(saved) == sizeof(LetIn);
 			}
+			else if (version == 1 && length == sizeof(LetInV1))
+			{
+				// 1.3.1 and earlier: Knock always unlocked the door; the level is taken from the door once it is resolved.
+				LetInV1 old;
+				read = a_intfc->ReadRecordData(old) == sizeof(LetInV1);
+				saved.door = old.door;
+				saved.cell = old.cell;
+				saved.cellWasPublic = old.cellWasPublic;
+				saved.weUnlocked = true;
+				saved.lockLevel = -1;   // filled in below
+			}
+			else
+			{
+				logger::warn("co-save: let-in record version {} length {} not understood; skipped", version, length);
+				continue;
+			}
+			if (read && a_intfc->ResolveFormID(saved.door, saved.door) && a_intfc->ResolveFormID(saved.cell, saved.cell))
+			{
+				if (version == 1)
+				{
+					auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(saved.door);
+					auto* lock = door ? door->GetLock() : nullptr;
+					saved.lockLevel = lock ? lock->baseLevel : 0;
+				}
+				g_letIn = saved;
+				ApplyLetIn(false);
+				MuteNags(nullptr);
+				logger::info("the save holds a let-in (record version {}): door {:08X}, cell {:08X}, Knock unlocked it: {}, lock level {}", version, g_letIn.door, g_letIn.cell,
+					g_letIn.weUnlocked, static_cast<int>(g_letIn.lockLevel));
+			}
+			else { logger::warn("co-save: let-in record could not be read or its forms resolved; no let-in restored"); }
 		}
 	}
 
@@ -2068,14 +2232,14 @@ namespace knock
 			settings::thiefGold, settings::thiefPenalty, settings::dislikePenalty, settings::intimidateMargin, settings::retryHours);
 		return std::format(
 			"{{\"ok\":true,\"enabled\":{},\"dayStart\":{},\"dayEnd\":{},\"hour\":{:.2f},\"isDay\":{},\"simpleActivate\":{},\"promptDoor\":\"{:08X}\",\"choiceDoor\":\"{:08X}\",\"buttons\":{},"
-			"\"letIn\":{{\"door\":\"{:08X}\",\"cell\":\"{:08X}\",\"cellWasPublic\":{}}},"
+			"\"letIn\":{{\"door\":\"{:08X}\",\"cell\":\"{:08X}\",\"cellWasPublic\":{},\"weUnlocked\":{},\"lockLevel\":{}}},\"publicCells\":{{\"built\":{},\"count\":{}}},"
 			"\"refusal\":{{\"door\":\"{:08X}\",\"speaker\":\"{:08X}\",\"active\":{},\"triedPersuade\":{},\"triedIntimidate\":{}}},"
 			"\"topics\":{{\"letIn\":\"{:08X}\",\"refuse\":\"{:08X}\"}},\"settings\":{},\"overrides\":{},\"lastDecision\":{},"
 			"\"table\":{{\"built\":{},\"actors\":{},\"ms\":{}}},"
 			"\"exclusions\":{{\"forms\":{},\"editorIDs\":{},\"unresolved\":{}}},"
 			"\"counts\":{{\"prompts\":{},\"knocks\":{},\"letIn\":{},\"nobody\":{},\"refused\":{},\"persuaded\":{},\"notPersuaded\":{},\"intimidated\":{},\"notIntimidated\":{},\"says\":{},\"sayFailed\":{},\"trespassBlocked\":{},\"nagMutes\":{},\"nagLeaks\":{},\"nagsMutedNow\":{},\"trespassFlagCleared\":{},\"knockSounds\":{},\"voiceVolumeSet\":{},\"voiceVolumeMissed\":{},\"perkChoiceRuns\":{},\"perkDefaultKnock\":{},\"buttonKnocks\":{}}},\"voiceVolume\":{},\"knockSound\":\"{:08X}\",\"events\":[{}]}}",
 			settings::enabled, settings::dayStartHour, settings::dayEndHour, calendar ? calendar->GetHour() : -1.0F, IsDay(), g_simpleActivate, g_promptDoor, g_choiceDoor, g_buttons.size(),
-			g_letIn.door, g_letIn.cell, g_letIn.cellWasPublic,
+			g_letIn.door, g_letIn.cell, g_letIn.cellWasPublic, g_letIn.weUnlocked, static_cast<int>(g_letIn.lockLevel), g_publicCellsBuilt, g_publicCells.size(),
 			g_refusal.door, g_refusal.speaker, RefusalActive(g_refusal.door), g_refusal.triedPersuade, g_refusal.triedIntimidate,
 			g_letInTopic ? g_letInTopic->GetFormID() : 0, g_refuseTopic ? g_refuseTopic->GetFormID() : 0, decision, overrides, g_lastDecision,
 			g_tableBuilt, g_tableActors, g_tableMs,
@@ -2118,8 +2282,8 @@ namespace knock
 			if (in.speaker) { decision = DecisionJson("check", in, Judge(in)); }
 		}
 		return std::format(
-			"{{\"ok\":true,\"verdict\":\"{}\",\"foundBy\":\"{}\",\"decision\":{},\"refusalActive\":{},\"cell\":\"{:08X}\",\"cellAttached\":{},\"owner\":\"{:08X}\",\"ownerType\":\"{}\",\"residents\":[{}],\"ownerPeople\":[{}]}}",
-			Name(verdict), home.method, decision, RefusalActive(a_refID), home.cell ? home.cell->GetFormID() : 0, home.cell ? home.cell->IsAttached() : false, home.owner ? home.owner->GetFormID() : 0,
+			"{{\"ok\":true,\"verdict\":\"{}\",\"publicWhy\":\"{}\",\"foundBy\":\"{}\",\"decision\":{},\"refusalActive\":{},\"cell\":\"{:08X}\",\"cellAttached\":{},\"owner\":\"{:08X}\",\"ownerType\":\"{}\",\"residents\":[{}],\"ownerPeople\":[{}]}}",
+			Name(verdict), home.publicWhy ? home.publicWhy : "", home.method, decision, RefusalActive(a_refID), home.cell ? home.cell->GetFormID() : 0, home.cell ? home.cell->IsAttached() : false, home.owner ? home.owner->GetFormID() : 0,
 			home.ownerNPC ? "npc" : (home.ownerFaction ? "faction" : (home.owner ? "other" : "none")), residents, people);
 	}
 

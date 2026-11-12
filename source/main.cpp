@@ -24,6 +24,7 @@ namespace
 		case SKSE::MessagingInterface::kDataLoaded:
 			strings::Configure("DynamicSimpleKnock");
 			knock::ResolveExclusions();
+			knock::SnapshotPublicCells();
 			knock::Install();
 			UI::Register();
 			DevBenchTool::Init(true);

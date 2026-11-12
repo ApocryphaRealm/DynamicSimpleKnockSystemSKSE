@@ -10,6 +10,9 @@ namespace knock
 	// The two door hooks and the event sinks. Once, at kDataLoaded.
 	void Install();
 
+	// Records which interior cells the plugins mark PublicArea, before any save or let-in changes the flag. Once, at kDataLoaded.
+	void SnapshotPublicCells();
+
 	// Reads the [Exclusions] list into form IDs and the [Voice] topics. At kDataLoaded and after a settings reload.
 	void ResolveExclusions();
 
