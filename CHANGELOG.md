@@ -8,6 +8,11 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 * **failed** - built but crashed or malfunctioned; the number was reclaimed
 * **scratch** - a hypothesis-test build that never held a real number
 
+## 1.3.3 - 2026-11-13 - working
+
+### Fixed
+- The DLL is built without link-time code generation, so antivirus scanners using the Bitdefender engine no longer flag it as a false positive (Gen:Variant.Ulise), which had held the 1.3.2 download in Nexus's quarantine. No change in game.
+
 ## 1.3.2 - 2026-11-12 - working
 
 ### Fixed
