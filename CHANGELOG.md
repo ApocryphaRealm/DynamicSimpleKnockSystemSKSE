@@ -8,7 +8,7 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 * **failed** - built but crashed or malfunctioned; the number was reclaimed
 * **scratch** - a hypothesis-test build that never held a real number
 
-## 1.3.2 - 2026-11-12 - untested
+## 1.3.2 - 2026-11-12 - working
 
 ### Fixed
 - Inns and other public places are no longer treated as homes. When another mod locks an inn (or a temple, keep, guild hall or jail), Knock now steps aside: no Knock prompt, no box, just the game's own lock. A place counts as public when its location is an inn, or when the game marks the cell as a public area; homes that the game also marks public (Nepos's House, Silus's House, the player houses and the like) are still homes. Shops are still homes: their owners live there and lock up at night.
