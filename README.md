@@ -24,7 +24,7 @@ The answer is spoken from the door with the native `ObjectReference.Say(topic, s
 
 ## Being let in
 
-The door's lock is opened and the cell's Public flag set in memory only, with no change flag on either form, so the game's save carries nothing of it. One let-in exists at a time, kept in a single SKSE co-save record, so a save made inside still works. It ends the next time a load finishes with you in an exterior cell: the door locks again and the cell returns to what it was. The door is locked again only if Knock unlocked it and it is still as Knock left it (unlocked, same lock level); a door another mod or the console changed meanwhile is left as it is.
+The door's lock is opened and the cell's Public flag set in memory only, with no change flag on either form, so the game's save carries nothing of it. One let-in exists at a time, kept in a single SKSE co-save record, so a save made inside still works. It ends the next time a load finishes with you in an exterior cell: the door locks again and the cell returns to what it was. The door is locked again only if Knock unlocked it and it is still as Knock left it (unlocked, same lock level); a door another mod or the console changed meanwhile is left as it is. While a let-in holds, a locked door out of the house is opened for you only when it carries its own plugin lock at the plugin's level (the household locking up); a lock another mod or the console added, or set to another level, is left alone.
 
 ## The knock sound
 

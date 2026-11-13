@@ -13,6 +13,10 @@ namespace knock
 	// Records which interior cells the plugins mark PublicArea, before any save or let-in changes the flag. Once, at kDataLoaded.
 	void SnapshotPublicCells();
 
+	// Records every door reference's lock level as the plugins load it, so the way out of a let-in house opens only the
+	// plugin's own lock, never one another mod or the console added. Once, at kDataLoaded.
+	void SnapshotPluginLocks();
+
 	// Reads the [Exclusions] list into form IDs and the [Voice] topics. At kDataLoaded and after a settings reload.
 	void ResolveExclusions();
 

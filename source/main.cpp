@@ -25,6 +25,7 @@ namespace
 			strings::Configure("DynamicSimpleKnock");
 			knock::ResolveExclusions();
 			knock::SnapshotPublicCells();
+			knock::SnapshotPluginLocks();
 			knock::Install();
 			UI::Register();
 			DevBenchTool::Init(true);

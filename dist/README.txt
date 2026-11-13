@@ -9,7 +9,7 @@ Nobody inside: a knock gets "No one's home. Come back later." The box still offe
 
 Refused, a second box offers Persuade (Speech 30 plus the same additions), Intimidate (your level, raised by your Speech, against theirs scaled by their confidence), Pick the lock and Leave. Persuade and Intimidate once each; a new knock starts over after an hour of game time. Persuaded or not, intimidated or not, the resident answers with a voiced line of its own for each. A lock is only picked when you choose it, and picking an owned lock is the usual crime. Sneaking goes straight to the lock.
 
-Let in, you are a guest: no trespass crime, nobody tells you it is time to go or that you are not supposed to be here, and talking to the household opens their normal conversation. The doors out of the house always open for you while you are let in. Their belongings stay theirs: taking them is still theft.
+Let in, you are a guest: no trespass crime, nobody tells you it is time to go or that you are not supposed to be here, and talking to the household opens their normal conversation. The doors out of the house open for you while you are let in, unless another mod or the console has put its own lock on them. Their belongings stay theirs: taking them is still theft.
 
 One SKSE DLL: no plugin, no scripts, no patches. It reads who owns the door or the space behind it while you play, so a door from any mod works, and nobody needs to carry a key.
 

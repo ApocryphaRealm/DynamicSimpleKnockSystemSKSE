@@ -70,6 +70,8 @@
 // change flag on either form, so the game's save carries nothing of it. One let-in at a time, kept in one co-save record so a
 // save made inside the house still works when loaded. It ends the next time a load finishes with the player in an exterior
 // cell: the door locks again and the cell goes back to what it was. Knock, Persuade and Intimidate all let in this way.
+// 1.3.2: the way out opens only the lock the door's plugin gave it, at the plugin's level (a resident's AI lock), never a
+// lock another mod or the console added or re-levelled (snapshot of every door reference at kDataLoaded, SnapshotPluginLocks).
 // 1.3.2: the door is locked again only if Knock unlocked it AND it is still as Knock left it (unlocked, same lock level); a
 // door another mod or the console locked, unlocked or re-levelled meanwhile is left as it is (EndLetIn logs which).
 //
@@ -244,6 +246,12 @@ namespace knock
 		// Interior cells whose PublicArea flag is set as the plugins load them (kDataLoaded, before any save or let-in).
 		std::unordered_set<RE::FormID> g_publicCells;
 		bool g_publicCellsBuilt = false;
+
+		// Door references as the plugins load them (kDataLoaded): the lock level of each that has a lock record, and every
+		// door reference seen. UnlockWayOut opens only a lock the plugin gave the door (1.3.2, test 43be step 13).
+		std::unordered_map<RE::FormID, std::int8_t> g_pluginLocks;
+		std::unordered_set<RE::FormID> g_pluginDoors;
+		bool g_pluginLocksBuilt = false;
 
 		// The actor table: built once per game, from the forms in memory.
 		std::vector<RE::FormID> g_actors;
@@ -1179,8 +1187,30 @@ namespace knock
 			if (!outside || outside->IsInteriorCell()) { return false; }
 			auto* lock = a_door->GetLock();
 			if (!lock) { return false; }
+			// 1.3.2 (test 43be step 13): only the lock the PLUGIN gave this door - which a resident's AI package locks at the
+			// plugin's level - is opened. A lock with no plugin lock record behind it, or at another level, was added at run
+			// time by another mod or the console (a console lock on the outside door also locks this side) and is left alone.
+			// Once per door and let-in: this runs every frame the crosshair rests on it.
+			static std::pair<RE::FormID, RE::FormID> leftLogged{ 0, 0 };
+			const auto id = a_door->GetFormID();
+			const auto leaveAlone = [&](std::string a_why) {
+				if (leftLogged != std::pair{ id, g_letIn.door })
+				{
+					leftLogged = { id, g_letIn.door };
+					Event(std::format("way out: door {:08X} inside the let-in cell {:08X} is locked (level {}), {}; left as it is", id, g_letIn.cell, static_cast<int>(lock->baseLevel), a_why));
+				}
+				return false;
+			};
+			if (!g_pluginLocksBuilt) { return leaveAlone("no snapshot of the plugins' locks to tell whose lock it is"); }
+			if (!g_pluginDoors.contains(id)) { return leaveAlone("the door was not loaded at data load, so its plugin lock is unknown"); }
+			const auto it = g_pluginLocks.find(id);
+			if (it == g_pluginLocks.end()) { return leaveAlone("its plugin gives it no lock (another mod or the console added it)"); }
+			if (it->second != lock->baseLevel)
+			{
+				return leaveAlone(std::format("its plugin lock is level {} (another mod or the console changed it)", static_cast<int>(it->second)));
+			}
 			lock->SetLocked(false);
-			Event(std::format("way out: door {:08X} inside the let-in cell {:08X} was locked by the game; unlocked", a_door->GetFormID(), g_letIn.cell));
+			Event(std::format("way out: door {:08X} inside the let-in cell {:08X} was locked by the game at its plugin's level {}; unlocked", id, g_letIn.cell, static_cast<int>(lock->baseLevel)));
 			return true;
 		}
 
@@ -1982,6 +2012,31 @@ namespace knock
 		logger::info("public places: {} of {} interior cells are PublicArea in the plugins (inns by LocTypeInn; PublicArea houses stay homes)", g_publicCells.size(), interiors);
 	}
 
+	void SnapshotPluginLocks()
+	{
+		g_pluginLocks.clear();
+		g_pluginDoors.clear();
+		g_pluginLocksBuilt = false;
+		const auto& [map, lock] = RE::TESForm::GetAllForms();
+		if (!map)
+		{
+			logger::warn("way out: the game's form table is not available at kDataLoaded; locked doors out of a let-in house will be left as they are");
+			return;
+		}
+		RE::BSReadLockGuard guard{ lock };
+		for (auto& [id, form] : *map)
+		{
+			if (!form || form->GetFormType() != RE::FormType::Reference) { continue; }
+			auto* ref = form->As<RE::TESObjectREFR>();
+			auto* base = ref ? ref->GetBaseObject() : nullptr;
+			if (!base || base->GetFormType() != RE::FormType::Door) { continue; }
+			g_pluginDoors.insert(id);
+			if (auto* doorLock = ref->GetLock()) { g_pluginLocks.emplace(id, doorLock->baseLevel); }
+		}
+		g_pluginLocksBuilt = true;
+		logger::info("way out: {} door references loaded at data load, {} with a lock record in their plugin", g_pluginDoors.size(), g_pluginLocks.size());
+	}
+
 	void Install()
 	{
 		REL::Relocation<std::uintptr_t> vtable{ RE::VTABLE_TESObjectDOOR[0] };
@@ -2232,14 +2287,14 @@ namespace knock
 			settings::thiefGold, settings::thiefPenalty, settings::dislikePenalty, settings::intimidateMargin, settings::retryHours);
 		return std::format(
 			"{{\"ok\":true,\"enabled\":{},\"dayStart\":{},\"dayEnd\":{},\"hour\":{:.2f},\"isDay\":{},\"simpleActivate\":{},\"promptDoor\":\"{:08X}\",\"choiceDoor\":\"{:08X}\",\"buttons\":{},"
-			"\"letIn\":{{\"door\":\"{:08X}\",\"cell\":\"{:08X}\",\"cellWasPublic\":{},\"weUnlocked\":{},\"lockLevel\":{}}},\"publicCells\":{{\"built\":{},\"count\":{}}},"
+			"\"letIn\":{{\"door\":\"{:08X}\",\"cell\":\"{:08X}\",\"cellWasPublic\":{},\"weUnlocked\":{},\"lockLevel\":{}}},\"publicCells\":{{\"built\":{},\"count\":{}}},\"pluginLocks\":{{\"built\":{},\"doors\":{},\"locked\":{}}},"
 			"\"refusal\":{{\"door\":\"{:08X}\",\"speaker\":\"{:08X}\",\"active\":{},\"triedPersuade\":{},\"triedIntimidate\":{}}},"
 			"\"topics\":{{\"letIn\":\"{:08X}\",\"refuse\":\"{:08X}\"}},\"settings\":{},\"overrides\":{},\"lastDecision\":{},"
 			"\"table\":{{\"built\":{},\"actors\":{},\"ms\":{}}},"
 			"\"exclusions\":{{\"forms\":{},\"editorIDs\":{},\"unresolved\":{}}},"
 			"\"counts\":{{\"prompts\":{},\"knocks\":{},\"letIn\":{},\"nobody\":{},\"refused\":{},\"persuaded\":{},\"notPersuaded\":{},\"intimidated\":{},\"notIntimidated\":{},\"says\":{},\"sayFailed\":{},\"trespassBlocked\":{},\"nagMutes\":{},\"nagLeaks\":{},\"nagsMutedNow\":{},\"trespassFlagCleared\":{},\"knockSounds\":{},\"voiceVolumeSet\":{},\"voiceVolumeMissed\":{},\"perkChoiceRuns\":{},\"perkDefaultKnock\":{},\"buttonKnocks\":{}}},\"voiceVolume\":{},\"knockSound\":\"{:08X}\",\"events\":[{}]}}",
 			settings::enabled, settings::dayStartHour, settings::dayEndHour, calendar ? calendar->GetHour() : -1.0F, IsDay(), g_simpleActivate, g_promptDoor, g_choiceDoor, g_buttons.size(),
-			g_letIn.door, g_letIn.cell, g_letIn.cellWasPublic, g_letIn.weUnlocked, static_cast<int>(g_letIn.lockLevel), g_publicCellsBuilt, g_publicCells.size(),
+			g_letIn.door, g_letIn.cell, g_letIn.cellWasPublic, g_letIn.weUnlocked, static_cast<int>(g_letIn.lockLevel), g_publicCellsBuilt, g_publicCells.size(), g_pluginLocksBuilt, g_pluginDoors.size(), g_pluginLocks.size(),
 			g_refusal.door, g_refusal.speaker, RefusalActive(g_refusal.door), g_refusal.triedPersuade, g_refusal.triedIntimidate,
 			g_letInTopic ? g_letInTopic->GetFormID() : 0, g_refuseTopic ? g_refuseTopic->GetFormID() : 0, decision, overrides, g_lastDecision,
 			g_tableBuilt, g_tableActors, g_tableMs,

@@ -13,6 +13,7 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 ### Fixed
 - Inns and other public places are no longer treated as homes. When another mod locks an inn (or a temple, keep, guild hall or jail), Knock now steps aside: no Knock prompt, no box, just the game's own lock. A place counts as public when its location is an inn, or when the game marks the cell as a public area; homes that the game also marks public (Nepos's House, Silus's House, the player houses and the like) are still homes. Shops are still homes: their owners live there and lock up at night.
 - Leaving a house you were let into locks the front door again only if Knock unlocked it and nobody has changed it since. A door that another mod or the console unlocked, locked or changed meanwhile is left as it is.
+- The way out of a house you were let into no longer opens a lock that another mod or the console put on the door. Knock still opens the door's own lock - the one its plugin gives it, which the household locks at night - so you can always walk out of a house you were let into. How it tells them apart: when the game loads, Knock notes every door's lock level as the plugins set it. On the way out, a locked door is opened only if its plugin gives it a lock and the level is still the plugin's. A lock on a door whose plugin has none, or at another level, was added later by a mod or the console and is left alone, with a log line saying so. (A console lock on the outside door also locks the inside one, which Knock used to open.)
 
 ## 1.3.1 - 2026-11-11 - working
 
