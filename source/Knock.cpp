@@ -8,7 +8,9 @@
 //
 // PUBLIC PLACES (1.3.2, Nexus report 2026-11-12: another mod locked the Bannered Mare at night and Knock ran house rules on
 // it). A door into a public place is left to the game: no Knock prompt, no box, the vanilla lock. Public is (a) the
-// destination location or a parent carries LocTypeInn, or (b) the cell's PublicArea flag AS LOADED FROM THE PLUGINS (a
+// destination location ITSELF carries LocTypeInn (1.3.4: not a parent - Dark's Whiterun Market puts LocTypeInn on the whole
+// hold, and every house in Whiterun read as an inn; every inn location in Skyrim.esm, the DLCs, BSHeartland and Wyrmstooth
+// carries the keyword on its own record, census 2026-11-15), or (b) the cell's PublicArea flag AS LOADED FROM THE PLUGINS (a
 // snapshot of every interior cell taken at kDataLoaded, before any save or let-in - our own let-in sets the flag in memory)
 // unless the location chain carries LocTypeHouse. The house exception is there because PublicArea is also set on real homes
 // in Skyrim.esm (Nepos's House, Silus's House, the Treasury House, Honorhall, Haelga's Bunkhouse, the player houses), which
@@ -531,7 +533,7 @@ namespace knock
 		// Why the cell is a public place (Verdict::kPublic), or nullptr for a place that may be somebody's home.
 		const char* PublicPlace(const RE::TESObjectCELL* a_cell, const RE::BGSLocation* a_location)
 		{
-			if (LocationKeyword(a_location, kPublicKeyword)) { return "its location is an inn (LocTypeInn)"; }
+			if (a_location && a_location->HasKeywordString(kPublicKeyword)) { return "its location is an inn (LocTypeInn)"; }   // own record only
 			if (!StoredPublic(a_cell)) { return nullptr; }
 			if (LocationKeyword(a_location, kHouseKeyword)) { return nullptr; }   // PublicArea on a house: still a home
 			return "the cell is PublicArea in its plugin";

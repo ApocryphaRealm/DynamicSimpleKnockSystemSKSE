@@ -12,6 +12,7 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 
 ### Fixed
 - Requiem (Nexus report 2026-11-14): the Activate press on a lived-in locked house door is now decided from the door under the crosshair itself, so Knock's box opens even when another mod's perk draws the door's prompt text and Knock's prompt hook is never asked. Suspected cause (not yet observed): a perk Activate entry with Run Immediately and a button label. When that happens the log says once per door: 'the prompt was drawn by something else (a perk entry?); Knock took the press'. The prompt word in that case is still the perk's own label.
+- Houses read as inns when a mod marks a whole town or hold as an inn (Nexus report 2026-11-15: Dark's Whiterun Market puts the inn keyword on the hold, so every house in Whiterun lost its Knock prompt and kept the game's own lock). A place now counts as an inn only when its own location is marked as one, not when a town or hold around it is; every inn in Skyrim and its DLCs is marked on its own location.
 
 ### Changed
 - Log: the per-door prompt verdict ('prompt on <door>: home / sneaking / no owner, no resident ...') is written at info the first time each door gets each verdict in a session (debug after that), so a default-level log answers what the rule decided.
