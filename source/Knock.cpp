@@ -264,6 +264,10 @@ namespace knock
 		std::uint32_t g_excludedUnresolved = 0;
 
 		RE::FormID g_promptDoor = 0;    // the door last shown as Knock
+		// 1.3.4: what has been logged at info this session, once each (rule 14: no per-frame info lines). The prompt verdict per
+		// door and verdict, and the doors whose press Knock took although its prompt hook never named them (InputHooks).
+		std::unordered_set<std::uint64_t> g_promptVerdictLogged;
+		std::unordered_set<RE::FormID> g_foreignPromptLogged;
 		RE::FormID g_choiceDoor = 0;    // the door the choice box is open for
 		std::vector<Act> g_buttons;     // what each button of the open box does
 		RE::FormID g_passDoor = 0;      // the next Activate on this door goes to the game untouched
@@ -1802,7 +1806,13 @@ namespace knock
 					const auto id = a_ref->GetFormID();
 					Home home;
 					const auto verdict = Classify(a_ref, home);
-					logger::debug("prompt on {:08X}: {}", id, Name(verdict));
+					// 1.3.4 (Requiem report 2026-11-14): the first time this session a door gets a verdict, at info, so a default-level log
+					// says whether the prompt hook was asked for a door at all, and what the rule decided; repeats stay at debug.
+					if (g_promptVerdictLogged.insert((static_cast<std::uint64_t>(id) << 8) | static_cast<std::uint64_t>(verdict)).second)
+					{
+						logger::info("prompt on {:08X}: {} (first time this session)", id, Name(verdict));
+					}
+					else { logger::debug("prompt on {:08X}: {}", id, Name(verdict)); }
 					// Once per door looked at (this runs every frame the crosshair rests on it).
 					static RE::FormID publicLogged = 0;
 					if (verdict == Verdict::kPublic && publicLogged != id)
@@ -1930,21 +1940,41 @@ namespace knock
 				_ProcessButton(a_this, a_event, a_data);
 			}
 
+			// 1.3.4 (Nexus report 2026-11-14, Mirax with Requiem: vanilla prompt, the press went straight to lockpicking). The press
+			// is decided from the crosshair door itself, by the rule, and no longer needs the prompt hook (DoorHooks::GetActivateText)
+			// to have named the door first (g_promptDoor). A perk Activate entry with Run Immediately AND a button label is suspected
+			// to make the HUD take the prompt text from the perk without asking the door form, so g_promptDoor was never set and every
+			// press went to the game (falsification episode 137, not yet observed). When the prompt hook did name the door, nothing
+			// changes; when it did not, the press is still taken, and that is logged once per door per session at info.
 			static bool TakePress()
 			{
-				if (!settings::enabled || !g_promptDoor) { return false; }
+				if (!settings::enabled) { return false; }
 				auto* pick = RE::CrosshairPickData::GetSingleton();
 				// the crosshair's reference: the handle at +0x04 on SE and AE alike (target / target[0]; the two CommonLibSSE-NG
 				// builds this mod compiles against name the member differently)
 				const auto target = pick ? reinterpret_cast<const RE::ObjectRefHandle*>(reinterpret_cast<std::uintptr_t>(pick) + 0x4)->get() : RE::NiPointer<RE::TESObjectREFR>();
-				if (!target || target->GetFormID() != g_promptDoor || target->GetFormID() == g_passDoor) { return false; }
+				if (!target) { return false; }
+				const RE::FormID id = target->GetFormID();
+				if (id == g_passDoor) { return false; }
+				auto* base = target->GetBaseObject();
+				if (!base || !base->Is(RE::FormType::Door)) { return false; }
 				Home home;
-				if (Classify(target.get(), home) != Verdict::kHome) { return false; }
-				const bool shown = RefuserHome(target->GetFormID(), home) ? ShowRefusalBox(target.get(), home) : ShowChoice(target.get(), home);
+				const auto verdict = Classify(target.get(), home);
+				if (verdict != Verdict::kHome)
+				{
+					logger::debug("press on {:08X}: {}; the game's own activation", id, Name(verdict));
+					return false;
+				}
+				const bool viaPrompt = id == g_promptDoor;
+				const bool shown = RefuserHome(id, home) ? ShowRefusalBox(target.get(), home) : ShowChoice(target.get(), home);
 				if (shown)
 				{
 					++g_buttonKnocks;
-					Event(std::format("the Activate button on {:08X} opened the knock box (ahead of ActivateRef and its perks)", target->GetFormID()));
+					if (!viaPrompt && g_foreignPromptLogged.insert(id).second)
+					{
+						logger::info("door {:08X}: the prompt was drawn by something else (a perk entry?); Knock took the press (classify: {})", id, Name(verdict));
+					}
+					Event(std::format("the Activate button on {:08X} opened the knock box (ahead of ActivateRef and its perks{})", id, viaPrompt ? "" : "; Knock's prompt hook was not asked for it"));
 				}
 				return shown;
 			}
