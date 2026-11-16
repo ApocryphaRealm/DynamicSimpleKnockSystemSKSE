@@ -8,7 +8,7 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 * **failed** - built but crashed or malfunctioned; the number was reclaimed
 * **scratch** - a hypothesis-test build that never held a real number
 
-## 1.3.4 - 2026-11-14 - untested
+## 1.3.4 - 2026-11-14 - working
 
 ### Fixed
 - Requiem (Nexus report 2026-11-14): the Activate press on a lived-in locked house door is now decided from the door under the crosshair itself, so Knock's box opens even when another mod's perk draws the door's prompt text and Knock's prompt hook is never asked. Suspected cause (not yet observed): a perk Activate entry with Run Immediately and a button label. When that happens the log says once per door: 'the prompt was drawn by something else (a perk entry?); Knock took the press'. The prompt word in that case is still the perk's own label.
