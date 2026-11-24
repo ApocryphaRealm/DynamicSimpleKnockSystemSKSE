@@ -30,6 +30,9 @@ namespace
 			UI::Register();
 			DevBenchTool::Init(true);
 			break;
+		case SKSE::MessagingInterface::kSaveGame:
+			knock::BeforeSave();
+			break;
 		case SKSE::MessagingInterface::kPostLoadGame:
 		case SKSE::MessagingInterface::kNewGame:
 			knock::OnGameLoaded();

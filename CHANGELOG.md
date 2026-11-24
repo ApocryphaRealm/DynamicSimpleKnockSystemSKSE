@@ -8,6 +8,11 @@ Written as changes happen, not reconstructed afterwards (rule 61). Each version 
 * **failed** - built but crashed or malfunctioned; the number was reclaimed
 * **scratch** - a hypothesis-test build that never held a real number
 
+## 1.3.5 - 2026-11-24 - untested
+
+### Fixed
+- A knock's answer is subtitled with the resident's name, not 'Door' (reported on Nexus): the door carries the resident's name only while the line plays, and gets its own name back when the line ends, after 15 s at the latest, before a save and at a load. New DevBench op 'subtitles' reads the subtitles on screen with each speaker's name.
+
 ## 1.3.4 - 2026-11-14 - working
 
 ### Fixed

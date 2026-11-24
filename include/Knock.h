@@ -23,6 +23,9 @@ namespace knock
 	// Forgets the actor table so it is built again on the next door. At kPostLoadGame and kNewGame.
 	void OnGameLoaded();
 
+	// Gives a door named for a spoken line its own name back. At kSaveGame, before the game writes the save.
+	void BeforeSave();
+
 	// Has the game ask the door for its prompt again (a setting changed).
 	void RefreshPrompt();
 
@@ -33,6 +36,7 @@ namespace knock
 
 	// DevBench, on the game's main thread. Each returns one JSON object.
 	std::string StateJson();
+	std::string SubtitlesJson();                                   // the subtitles on screen: each speaker, its display name, the text
 	std::string CheckJson(std::uint32_t a_refID);                  // the rule's verdict, the residents, and the decision it would make now
 	std::string ActJson(std::uint32_t a_refID, const char* a_act); // "knock", "persuade" or "intimidate", as the box's button does
 	std::string ChoiceJson(std::uint32_t a_refID, bool a_refusalBox); // opens the knock box, or the refusal box

@@ -821,6 +821,70 @@ namespace knock
 
 		void UnmuteForSay(RE::TESTopic* a_topic);
 
+		// THE SUBTITLE NAMES THE ONE ANSWERING (theanothermoonside, Nexus, 2026-11-24: "the subtitle shows the Door itself as the
+		// speaker"). The line is said BY the door (SayAs, so it is heard at the door), and the game names a subtitle after the
+		// reference that says it. For the length of the line the door carries the resident's name as its own display name
+		// (ExtraTextDisplayData, the same data a renamed reference keeps); the door gets its own name back when the spoken
+		// line's sound on it has stopped, after 15 s at the latest, before every save (kSaveGame) and at every game load.
+		struct DoorName
+		{
+			RE::FormID door{ 0 };
+			bool hadName{ false };
+			std::string oldName;
+			std::uint32_t before{ static_cast<std::uint32_t>(-1) };
+			bool heard{ false };
+			std::chrono::steady_clock::time_point until{};
+		};
+		DoorName g_doorName;
+		std::uint32_t g_doorNamed = 0, g_doorNameRestored = 0;
+
+		void RestoreDoorName(const char* a_why)
+		{
+			if (!g_doorName.door) { return; }
+			auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(g_doorName.door);
+			if (door)
+			{
+				if (g_doorName.hadName) { door->SetDisplayName(RE::BSFixedString(g_doorName.oldName.c_str()), true); }
+				else { door->extraList.RemoveByType(RE::ExtraDataType::kTextDisplayData); }
+				++g_doorNameRestored;
+				logger::info("door {:08X} name restored ({}): \"{}\"", g_doorName.door, a_why, door->GetDisplayFullName());
+			}
+			g_doorName = {};
+		}
+
+		void NameDoorAs(RE::TESObjectREFR* a_door, RE::Actor* a_speaker)
+		{
+			RestoreDoorName("a new line");
+			const char* name = a_speaker->GetDisplayFullName();
+			if (!name || !name[0]) { return; }
+			const auto* text = a_door->extraList.GetByType<RE::ExtraTextDisplayData>();
+			const auto* say = a_door->extraList.GetByType<RE::ExtraSayToTopicInfo>();
+			g_doorName.door = a_door->GetFormID();
+			g_doorName.hadName = text != nullptr;
+			g_doorName.oldName = text && text->displayName.c_str() ? text->displayName.c_str() : "";
+			g_doorName.before = say ? say->sound.soundID : static_cast<std::uint32_t>(-1);
+			g_doorName.heard = false;
+			g_doorName.until = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+			a_door->SetDisplayName(RE::BSFixedString(name), true);
+			++g_doorNamed;
+			logger::info("door {:08X} named \"{}\" for the spoken line (the subtitle's speaker)", a_door->GetFormID(), name);
+		}
+
+		// Each frame while the door carries the resident's name: once the line's sound has shown up on the door and stopped, or
+		// after 15 s, the door's own name comes back.
+		void ApplyDoorName()
+		{
+			if (!g_doorName.door) { return; }
+			auto* door = RE::TESForm::LookupByID<RE::TESObjectREFR>(g_doorName.door);
+			auto* say = door ? door->extraList.GetByType<RE::ExtraSayToTopicInfo>() : nullptr;
+			if (say && say->sound.IsValid() && say->sound.soundID != g_doorName.before)
+			{
+				if (say->sound.IsPlaying()) { g_doorName.heard = true; }
+				else if (g_doorName.heard) { RestoreDoorName("the line ended"); return; }
+			}
+			if (!door || std::chrono::steady_clock::now() > g_doorName.until) { RestoreDoorName(door ? "15 s passed" : "the door is gone"); }
+		}
+
 		// Whether the topic has a line whose conditions pass for this speaker (voice type and the rest), as the game will ask.
 		// Read from the forms in memory, so it holds for a speaker whose cell is not loaded.
 		bool HasLineFor(RE::TESTopic* a_topic, RE::Actor* a_speaker)
@@ -875,7 +939,7 @@ namespace knock
 			auto* args = RE::MakeFunctionArguments(static_cast<RE::TESTopic*>(a_topic), static_cast<RE::Actor*>(a_speaker), false);
 			RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{ new SayDone(a_what) };
 			const bool sent = vm->DispatchMethodCall(object, RE::BSFixedString("Say"), args, callback);
-			if (sent) { ++g_says; }
+			if (sent) { ++g_says; NameDoorAs(a_door, a_speaker); }
 			else { ++g_sayFailed; }
 			if (sent && settings::voiceVolume < 100)
 			{
@@ -1132,6 +1196,7 @@ namespace knock
 				_Update(a_this, a_delta);
 				ClearTrespassing(a_this);
 				ApplyVoiceVolume();
+				ApplyDoorName();
 				TickWoodKnock(a_this, a_delta);
 				TickPendingAnswer(a_this, a_delta);
 			}
@@ -2225,6 +2290,7 @@ namespace knock
 
 	void OnGameLoaded()
 	{
+		RestoreDoorName("game load");
 		RestoreNarrowed();
 		g_tableBuilt = false;
 		g_promptDoor = 0;
@@ -2333,6 +2399,30 @@ namespace knock
 			g_excludedIDs.size(), g_excludedEditorIDs.size(), g_excludedUnresolved,
 			g_promptsShown, g_knocks, g_letIns, g_nobody, g_refused, g_persuaded, g_notPersuaded, g_intimidated, g_notIntimidated, g_says, g_sayFailed, g_trespassBlocked, g_nagMutes, g_nagLeaks, !g_muted.empty(), g_trespassFlagCleared,
 			g_knockSounds, g_voiceVolumeSet, g_voiceVolumeMissed, g_perkChoiceRuns, g_perkDefaultKnock, g_buttonKnocks, settings::voiceVolume, g_knockSound ? g_knockSound->GetFormID() : 0, events);
+	}
+
+	void BeforeSave()
+	{
+		RestoreDoorName("before a save");
+	}
+
+	std::string SubtitlesJson()
+	{
+		std::string list;
+		auto* manager = RE::SubtitleManager::GetSingleton();
+		if (manager)
+		{
+			RE::BSSpinLockGuard guard(manager->lock);
+			for (auto& entry : manager->subtitles)
+			{
+				auto ref = entry.speaker.get();
+				if (!list.empty()) { list += ","; }
+				list += std::format("{{\"speaker\":\"{:08X}\",\"name\":\"{}\",\"text\":\"{}\"}}", ref ? ref->GetFormID() : 0,
+					ref ? Escape(ref->GetDisplayFullName()) : "", Escape(entry.subtitle.c_str()));
+			}
+		}
+		return std::format("{{\"ok\":{},\"op\":\"subtitles\",\"subtitles\":[{}],\"doorNamed\":\"{:08X}\",\"named\":{},\"restored\":{}}}",
+			manager != nullptr, list, g_doorName.door, g_doorNamed, g_doorNameRestored);
 	}
 
 	std::string CheckJson(std::uint32_t a_refID)

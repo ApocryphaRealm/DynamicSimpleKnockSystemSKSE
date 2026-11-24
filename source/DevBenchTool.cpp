@@ -97,6 +97,7 @@ namespace DevBenchTool
 					return std::format(R"({{"ok":{},"op":"reload"}})", ok ? "true" : "false");
 				});
 			}
+			else if (op == "subtitles") { out = OnMain([]() { return knock::SubtitlesJson(); }); }
 			else if (op == "strings") { out = std::format(R"({{"ok":true,"op":"strings","strings":{}}})", strings::StatusJson()); }
 			else { out = OnMain([]() { return knock::StateJson(); }); }
 			a_write(a_sink, out.c_str());
