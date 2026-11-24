@@ -829,7 +829,9 @@ namespace knock
 		// name (ExtraTextDisplayData, the same data a renamed reference keeps) for as long as SubtitleManager holds an entry
 		// spoken by that door, read each frame; when none is left, the door gets its own name back. Before every save
 		// (kSaveGame) the name comes off so no save keeps it, and goes back on at the next frame while the subtitle is still
-		// up; at a game load it is dropped.
+		// up; at a game load it is dropped. Known edge (Fable Agent, 2026-11-24): the knock prompt and the choice box show the
+		// home cell's name and fall back to the DOOR's display name when that cell has no name, so at such a door they read
+		// the resident's name while the subtitle is up. No named house does that; not yet tested at a nameless cell.
 		struct DoorName
 		{
 			RE::FormID door{ 0 };
